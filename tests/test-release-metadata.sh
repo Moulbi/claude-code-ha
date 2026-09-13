@@ -89,4 +89,30 @@ grep -q 'CLAUDE_CREDENTIALS_DIRECTORY' "$addon_dir/run.sh" && \
 grep -q 'claude_config_dir="/data/.config/claude"' "$addon_dir/run.sh" || \
     fail "the live Claude config directory moved; CLAUDE.md and the migration notes need updating"
 
-echo "Release metadata suite passed (version $config_version)"
+# Repository identity. Home Assistant reads repository.yaml to add this as an
+# add-on source, and the add-on's own url is what users click from the
+# Supervisor UI. Both must name THIS repository: a fork that still advertises
+# its upstream sends users to someone else's code.
+repo_url=$(sed -n 's|^url: *||p' "$repo_root/repository.yaml" | tr -d '"')
+addon_url=$(sed -n 's|^url: *||p' "$addon_dir/config.yaml" | tr -d '"')
+
+[ -n "$repo_url" ] || fail "repository.yaml has no url"
+[ "$repo_url" = "$addon_url" ] || \
+    fail "repository.yaml url '$repo_url' and config.yaml url '$addon_url' disagree"
+
+case "$repo_url" in
+    https://github.com/*/*) ;;
+    *) fail "repository url should be a GitHub URL, got '$repo_url'" ;;
+esac
+
+# The install instructions users copy must point at the same repository.
+for doc in "$repo_root/README.md" "$addon_dir/README.md" "$addon_dir/DOCS.md"; do
+    grep -q "$repo_url" "$doc" || \
+        fail "$(basename "$doc") does not mention the repository url $repo_url"
+done
+
+# The README badge is the first thing a visitor reads; keep it truthful.
+grep -q "version-${config_version}-" "$repo_root/README.md" || \
+    fail "README version badge does not show $config_version"
+
+echo "Release metadata suite passed (version $config_version, repo $repo_url)"
