@@ -49,6 +49,18 @@ fi
 grep -q 'interface 127.0.0.1' "$addon_dir/run.sh" || \
     fail "ttyd must bind 127.0.0.1 only; it runs --writable with no credentials"
 
+# Supervisor privileges. `manager` and `admin` let this container install
+# add-ons, and an add-on can run privileged on the host, so either turns code
+# execution here into host takeover. Changing this must be deliberate.
+role=$(sed -n 's/^hassio_role: *\([a-z]*\).*/\1/p' "$addon_dir/config.yaml")
+case "$role" in
+    homeassistant|default) ;;
+    manager|admin)
+        fail "hassio_role '$role' grants add-on management (host-takeover path); use homeassistant" ;;
+    *)
+        fail "unexpected or missing hassio_role: '$role'" ;;
+esac
+
 # The environment contract is written twice — once in init_environment and once
 # in the /etc/profile.d script that every ttyd bash session sources — and it was
 # also documented a third time in CLAUDE.md with values the code never set

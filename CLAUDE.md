@@ -55,6 +55,14 @@ container holding `/config` read-write and `SUPERVISOR_TOKEN`.
 - Never add a `ports:` mapping to `config.yaml` and never bind ttyd to
   `0.0.0.0`. `tests/test-release-metadata.sh` fails the build if you do.
 
+### Supervisor privileges (do not regress)
+`hassio_role: homeassistant`, not `manager`. `manager` grants add-on management,
+and an add-on can run privileged on the host, so code execution in this container
+would become host takeover. The Core API (states, services, events) comes from
+`homeassistant_api: true` and is unaffected; `ha addons ...` and
+`ha supervisor ...` are refused by design.
+`tests/test-release-metadata.sh` fails the build if the role widens.
+
 ### Testing
 Run `./tests/run-tests.sh` before committing. It covers release metadata, the
 production `run.sh`, startup hardening and the Node image service. CI
@@ -243,32 +251,47 @@ apk add python3
 persist-install python3
 ```
 
-**Container Architecture**:
-- `apk add` installs to ephemeral container layer (LOST on restart)
-- `persist-install` installs to `/data/packages` (PERSISTENT storage)
-- `/data` is mounted from Home Assistant and survives all reboots
+**Container Architecture** (rewritten in 2.2.0):
+- `apk add` alone installs to the ephemeral container layer (LOST on restart)
+- `persist-install` runs the same `apk add`, then records the package in
+  `/data/packages/world` and keeps apk's download cache in
+  `/data/packages/apk-cache`
+- On every start, `run.sh` replays that list through apk, so packages come back
+  as **complete** installations — data files, dependencies and triggers included
 
-**Known limit — be honest with users about it**: `persist-install` copies only
-executables and shared libraries into `/data/packages`. Packages that also need
-data files, configuration or helper binaries (`python3`, `git`, `perl`) may not
-work after a restart from the persistent copy alone. For those, prefer the
-`persistent_apk_packages` add-on option, which reinstalls them cleanly on each
-start.
+**Why it works this way**: the pre-2.2.0 version copied executables and `*.so`
+files into `/data` and left everything else behind. `python3` ships 715 files
+under `/usr/lib` and its standard library is `.py`, not `.so`, so
+`persist-install python3` produced a Python that died at the next restart with
+"Could not find platform independent libraries". Persist the inputs, not the
+artefacts.
+
+**Offline behaviour**: the cache makes a warm replay take about a second and lets
+most packages restore with no network. Not all — apk masks virtual providers
+under `--no-network` — so the replay retries package by package and reports which
+ones need connectivity. Say that accurately; do not promise full offline support.
+
+**Legacy leftovers**: binaries copied by the old mechanism may still be in
+`/data/packages/bin`. That directory is now LAST in `PATH` so it cannot shadow a
+real installation. `persist-install --list` flags them.
 
 ### Usage Examples
 
 ```bash
 # Install system packages (Alpine APK)
-persist-install python3 py3-pip git vim htop
+persist-install vim htop
 
-# Install Python packages
+# Install Python packages (persistent virtualenv)
 persist-install --python requests pandas numpy
 
-# List installed packages
-persist-install --list
+# Stop reinstalling a package on each start
+persist-install --remove htop
 
-# Check help
-persist-install --help
+# Replay the recorded list now (run.sh does this at startup)
+persist-install --restore
+
+# List what is persisted
+persist-install --list
 ```
 
 ### How It Works
@@ -284,8 +307,9 @@ persist-install --help
 ```
 
 **Environment Setup**:
-- `PATH="/data/packages/bin:/data/packages/python/venv/bin:$PATH"`
-- Persistent packages are checked FIRST (highest priority)
+- `PATH="/data/packages/python/venv/bin:/data/home/.local/bin:$PATH:/data/packages/bin"`
+- The Python venv comes EARLY (it is the intended python); the legacy
+  `/data/packages/bin` comes LAST so stale copies cannot shadow a real install
 - Python venv automatically activated when packages installed
 
 ### When User Asks to Install Something
@@ -343,13 +367,16 @@ Claude: "You can interact with Home Assistant using the Supervisor API!
 
 ### Common Packages Users Might Request
 
-**System Tools**:
-- `git` - Version control
-- `vim` / `nano` - Text editors (nano already installed)
-- `htop` - Process monitor
-- `curl` / `wget` - Download tools (curl already installed)
-- `jq` - JSON processor (already installed)
+**Already in the image — never install these**: `git`, `nano`, `curl`, `wget`,
+`jq`, `tree`, `tmux`, `python3`, `py3-pip`, `node`, `npm`, `ha`, `gh`.
+
+**Common requests that genuinely need installing**:
+- `vim` - removed from the image in 2.2.0 (33 MB); `persist-install vim`
+- `yq` - removed in 2.2.0 (10 MB); `persist-install yq`
+- `htop` - process monitor
 - `sqlite` - SQLite database
+- Python libraries (`requests`, `pyyaml`, `aiohttp`, `beautifulsoup4`) are no
+  longer bundled: use `persist-install --python <name>`
 
 **Python Tools**:
 - `python3 py3-pip` - Python and package manager
@@ -446,10 +473,9 @@ du -sh /data/packages
 ```bash
 # User asks: "I want to do data analysis with Python"
 
-# Step 1: Install Python and pip
-persist-install python3 py3-pip
+# Step 1: python3 and pip already ship in the image — nothing to do
 
-# Step 2: Install data science packages
+# Step 2: Install data science packages into the persistent virtualenv
 persist-install --python pandas numpy matplotlib jupyter
 
 # Step 3: Verify installations

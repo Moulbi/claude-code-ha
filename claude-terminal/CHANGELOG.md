@@ -1,5 +1,78 @@
 # Changelog
 
+## 2.2.0
+
+### 🐛 Bug Fix - `persist-install` did not actually make packages work after a restart
+The mechanism installed a package with `apk`, then copied its executables from
+`/usr/bin` and its `*.so` files from `/usr/lib` into `/data/packages`. Everything
+else the package shipped was silently left behind.
+
+Measured against the real Alpine 3.21 index: **`python3` installs 715 files under
+`/usr/lib`**, and its standard library is `.py`, not `.so`. So `persist-install
+python3 py3-pip` — the exact command this project's own instructions told the
+assistant to run — produced a `python3` that failed at the next restart with
+`Could not find platform independent libraries <prefix>`. The same applied to
+anything needing data files at runtime (`git`, `vim`, `perl`).
+
+**The fix persists the inputs instead of the artefacts.** Two things now live in
+`/data`: the list of packages you asked for (`/data/packages/world`) and apk's
+download cache (`/data/packages/apk-cache`). On every container start, `run.sh`
+replays that list through `apk`, producing a genuine, complete installation —
+data files, symlinks, triggers and dependencies included.
+
+- **Verified end-to-end** against a real Alpine root: install `python3` in one
+  container, recreate the container, replay — `import json, ssl, sqlite3` works.
+  A warm replay of `python3` and its 25 dependencies takes about **one second**.
+- **Mostly works offline too.** The cached `.apk` files and repository indexes
+  mean a restart with no internet still restores most packages. Not all: `apk`
+  masks virtual providers under `--no-network` (`python3` needs `python3-pyc`),
+  so the fallback retries package by package and reports precisely which entries
+  need connectivity rather than failing the batch.
+- **A failed install is no longer recorded**, so a typo cannot make every future
+  startup fail on a package that does not exist.
+- **New**: `persist-install --remove <pkg>` and `persist-install --restore`.
+- **Legacy leftovers are handled, not abandoned.** Binaries copied by the old
+  mechanism stay on disk but move to the **end** of `PATH`, so a real
+  installation always wins, and `persist-install --list` points them out.
+
+### 🔒 Security - Supervisor role reduced from `manager` to `homeassistant`
+- `manager` grants **add-on management**. An add-on can run privileged on the
+  host, so anything achieving code execution in this container — a prompt
+  injection, a hostile repository, a compromised dependency — could install one
+  and take over the Home Assistant host. That is a large blast radius for a
+  terminal, and it was granted for a capability the add-on does not need.
+- `homeassistant_api: true` plus the `homeassistant` role still provides the full
+  **Core API** — states, services, events, config — which is what "connect Home
+  Assistant to Claude" actually requires, along with `ha core ...`.
+- **What you lose**: `ha addons ...` and `ha supervisor ...` are refused. If you
+  want them back, set `hassio_role: manager` in `config.yaml` and rebuild,
+  knowing you are re-opening the path above.
+- CI now fails the build if the role returns to `manager` or `admin`.
+
+### 🛠️ Improvement - Smaller image, honestly measured
+Measured by installing both package sets into real Alpine 3.21 roots:
+**193 MiB in 111 packages → 146 MiB in 67 packages.**
+
+An earlier review of this repository estimated the saving at "300-400 MB". That
+was wrong by roughly six times; the real figure is ~53 MB, and the more valuable
+outcome is **44 fewer packages** to carry CVEs.
+
+- **Removed**: `vim` (33 MB), `yq` (10 MB), `py3-aiohttp` (6 MB), `py3-requests`,
+  `py3-yaml`, `py3-beautifulsoup4`. Every one is a single `persist-install`
+  away — and, thanks to the fix above, comes back *working*.
+- **Kept**: `tree`, which measured under a megabyte. Dropping it would have cost
+  a familiar command and saved nothing.
+- The Supervisor API examples now name their prerequisite
+  (`persist-install --python requests`) instead of assuming it is bundled, and
+  the README no longer advertises tools that are not in the image.
+
+### 🔧 Technical
+- New `tests/test-persist-install.sh`: the world file records only successful
+  installs, never duplicates, survives removal, drives the startup replay, and
+  falls back per package. `--ha-cli` is asserted never to shadow the bundled CLI.
+- `tests/test-production-run.sh` updated: startup now replays the persistent
+  package list even when no packages are configured, which is the whole point.
+
 ## 2.1.0
 
 ### 🔒 Security - The add-on no longer publishes a root shell on your LAN

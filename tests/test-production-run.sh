@@ -92,21 +92,26 @@ chmod +x "$PERSIST_INSTALL_BIN"
 config_apk_packages=$'tmux\nopenssh-client'
 config_pip_packages=$'requests\nyaml'
 setup_persistent_packages
-printf '%s\n' '---' 'tmux' '---' 'openssh-client' '---' '--python' 'requests' 'yaml' > "$tmp_dir/expected.log"
+printf '%s\n' '---' '--restore' '---' 'tmux' '---' 'openssh-client' '---' '--python' 'requests' 'yaml' > "$tmp_dir/expected.log"
 cmp -s "$tmp_dir/expected.log" "$PERSIST_INSTALL_LOG" || fail "newline Bashio lists were not installed correctly"
 
 config_apk_packages='["git","nano"]'
 config_pip_packages='["httpx","ruff"]'
 : > "$PERSIST_INSTALL_LOG"
 setup_persistent_packages
-printf '%s\n' '---' 'git' '---' 'nano' '---' '--python' 'httpx' 'ruff' > "$tmp_dir/expected.log"
+printf '%s\n' '---' '--restore' '---' 'git' '---' 'nano' '---' '--python' 'httpx' 'ruff' > "$tmp_dir/expected.log"
 cmp -s "$tmp_dir/expected.log" "$PERSIST_INSTALL_LOG" || fail "JSON Bashio lists were not installed correctly"
 
+# With no configured packages the startup still replays the world file, so a
+# package the user installed interactively survives the container being
+# recreated. That replay is the whole point of the 2.2.0 mechanism.
 config_apk_packages='[]'
 config_pip_packages=''
 : > "$PERSIST_INSTALL_LOG"
 setup_persistent_packages
-[ ! -s "$PERSIST_INSTALL_LOG" ] || fail "empty package options should be a no-op"
+printf '%s\n' '---' '--restore' > "$tmp_dir/expected.log"
+cmp -s "$tmp_dir/expected.log" "$PERSIST_INSTALL_LOG" || \
+    fail "empty package options should still restore the persistent world file"
 
 # One optional package failure must not terminate add-on startup or skip the rest.
 config_apk_packages=$'missing-package\ngit'
@@ -115,7 +120,7 @@ PERSIST_INSTALL_FAIL_ON='missing-package'
 export PERSIST_INSTALL_FAIL_ON
 : > "$PERSIST_INSTALL_LOG"
 setup_persistent_packages
-printf '%s\n' '---' 'missing-package' '---' 'git' > "$tmp_dir/expected.log"
+printf '%s\n' '---' '--restore' '---' 'missing-package' '---' 'git' > "$tmp_dir/expected.log"
 cmp -s "$tmp_dir/expected.log" "$PERSIST_INSTALL_LOG" || fail "package failure did not continue safely"
 
 echo "Production run.sh regression suite passed"

@@ -72,8 +72,14 @@ init_environment() {
     # (which controls permission prompts, not whether Claude can launch).
     export IS_SANDBOX=1
 
-    # Setup persistent package paths (HIGHEST PRIORITY)
-    export PATH="$persist_bin:$persist_python/venv/bin:$data_home/.local/bin:$PATH"
+    # PATH order matters.
+    #
+    # $persist_bin used to come FIRST. That is what let a stale copied binary
+    # shadow a newer one from the image (the Home Assistant CLI downgrade), and
+    # with the 2.2.0 package manager those copies are legacy leftovers that were
+    # never complete. They now come LAST, so a real installation always wins.
+    # The Python virtualenv stays early: it is genuinely the intended python.
+    export PATH="$persist_python/venv/bin:$data_home/.local/bin:$PATH:$persist_bin"
     export LD_LIBRARY_PATH="$persist_lib:${LD_LIBRARY_PATH:-}"
     export PKG_CONFIG_PATH="$persist_lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 
@@ -104,8 +110,10 @@ export IS_SANDBOX=1
 # GitHub CLI persistent configuration
 export GH_CONFIG_DIR="/data/.config/gh"
 
-# Persistent package paths and native Claude binary (HIGHEST PRIORITY)
-export PATH="/data/packages/bin:/data/packages/python/venv/bin:/data/home/.local/bin:$PATH"
+# Persistent Python venv and native Claude binary come early; the legacy copied
+# binaries in /data/packages/bin come LAST so they can never shadow a real
+# installation (see run.sh for the full rationale).
+export PATH="/data/packages/python/venv/bin:/data/home/.local/bin:$PATH:/data/packages/bin"
 export LD_LIBRARY_PATH="/data/packages/lib:${LD_LIBRARY_PATH:-}"
 export PKG_CONFIG_PATH="/data/packages/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
 
@@ -378,8 +386,30 @@ setup_persistent_packages() {
         bashio::log.info "Persistent package manager installed: 'persist-install'"
     fi
 
+    # Bring back everything the user installed in a previous session before
+    # applying the configured lists, so an interactive `persist-install` is not
+    # lost when the container is recreated.
+    restore_persistent_packages
+
     # Auto-install packages from configuration
     auto_install_packages
+}
+
+# Replay /data/packages/world through apk. Packages come back as complete
+# installations — data files, dependencies and triggers included — which the
+# previous copy-the-binary scheme could not do: `persist-install python3` used
+# to yield a python3 whose standard library had been left behind.
+restore_persistent_packages() {
+    local persist_install="${PERSIST_INSTALL_BIN:-/usr/local/bin/persist-install}"
+
+    [ -x "$persist_install" ] || return 0
+
+    if "$persist_install" --restore; then
+        return 0
+    fi
+
+    bashio::log.warning "Some persistent packages could not be restored; continuing startup"
+    return 0
 }
 
 # Normalize both Bashio list formats seen across Supervisor generations:

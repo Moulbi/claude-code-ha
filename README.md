@@ -41,7 +41,9 @@ Authentication uses OAuth — no API key or config needed for a normal setup. Th
 - **Claude Code CLI** — latest native release on amd64/aarch64
 - **Home Assistant CLI** (`ha`) — talk to Supervisor and Core from the terminal
 - **GitHub CLI** (`gh`) — with persistent auth
-- **git, Python 3 + pip, Node.js, jq, yq, vim, nano, tree** and more, out of the box
+- **git, Python 3 + pip, Node.js, jq, nano, tree, curl, wget, tmux** out of the box
+- **Anything else in one command** — `persist-install vim yq` installs it and
+  brings it back, complete, on every restart
 - **Claude Code skills & commands** for Home Assistant pre-installed
 
 ### Persistence & packages

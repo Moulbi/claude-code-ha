@@ -6,6 +6,19 @@ FROM ${BUILD_FROM}
 # ttyd and tmux are baked in on purpose: they used to be installed by run.sh on
 # every container start, which made startup depend on the Alpine mirrors being
 # reachable and aborted the add-on when they were not.
+# Kept: everything the add-on itself needs to run, plus the tools a terminal is
+# unusable without. Measured against the real Alpine 3.21 index, this set is
+# 146 MiB in 67 packages; the previous list was 193 MiB in 111.
+#
+# Removed, and why — every one of them is a one-liner away via persist-install,
+# which since 2.2.0 reinstalls packages completely on each start:
+#   vim (33 MB)                 nano is here; `persist-install vim` restores it
+#   yq (10 MB)                  jq is here and covers the common cases
+#   py3-aiohttp, py3-requests,  library choices belong to the user's project,
+#   py3-yaml, py3-beautifulsoup4  not the image: `persist-install --python ...`
+#                               puts them in the persistent virtualenv
+# tree is kept: it measured at under a megabyte, so dropping it would cost
+# users a familiar command and save nothing.
 RUN apk add --no-cache \
     nodejs \
     npm \
@@ -16,14 +29,8 @@ RUN apk add --no-cache \
     nano \
     python3 \
     py3-pip \
-    py3-requests \
-    py3-aiohttp \
-    py3-yaml \
-    py3-beautifulsoup4 \
     jq \
-    yq \
     git \
-    vim \
     wget \
     tree
 

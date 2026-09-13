@@ -7,6 +7,7 @@ repo_root=$(CDPATH= cd -- "$tests_dir/.." && pwd)
 "$tests_dir/test-release-metadata.sh"
 "$tests_dir/test-production-run.sh"
 "$tests_dir/test-startup-hardening.sh"
+"$tests_dir/test-persist-install.sh"
 
 # The image service is the ingress entry point. Its suite needs node and the
 # service's dependencies; skip loudly rather than pretend it ran.
