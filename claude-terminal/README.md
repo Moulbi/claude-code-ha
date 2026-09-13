@@ -81,7 +81,9 @@ The add-on works out of the box, but also supports a few optional advanced setti
 - **Authentication**: OAuth with Anthropic (credentials stored securely in `/config/claude-config/`)
 - **Terminal**: Full bash environment with Claude Code CLI pre-installed
 - **Persistent Claude override**: Optional `use_persistent_claude` / `auto_update_claude_on_start`
-- **Volumes**: Access to both `/config` (Home Assistant) and `/addons` (for development)
+- **Volumes**: `/config` (Home Assistant configuration, read-write) and `/data`
+  (add-on private storage: credentials, persistent packages, pasted images).
+  `/addons` is **not** mapped.
 
 ## Troubleshooting
 

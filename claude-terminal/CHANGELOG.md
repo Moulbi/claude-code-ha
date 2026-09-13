@@ -67,6 +67,34 @@
   shared libraries are copied, so packages needing data files may not survive a
   restart from the persistent copy alone.
 
+### 📚 Documentation - The project instructions described an add-on that no longer exists
+- **`CLAUDE.md` documented credential paths the code has not used for several
+  releases**, which would have led anyone following it to "fix" authentication into
+  the wrong directory:
+  - `HOME` is `/data/home`, not `/root`.
+  - `ANTHROPIC_CONFIG_DIR` is `/data/.config/claude`, not `/config/claude-config`.
+  - `CLAUDE_CREDENTIALS_DIRECTORY` was listed as a key environment variable. It is
+    set nowhere in the codebase and never was.
+  - `/config/claude-config/` is a **legacy** location, read once by the migration,
+    not where credentials live.
+  - The "background credential monitoring service" in the startup flow was removed
+    when the add-on moved to `/data`.
+- **`README.md` claimed `/addons` was mapped.** Only `config:rw` is.
+- **`persist-install --ha-cli` guidance corrected**: `ha` already ships in the image.
+- **These three files are now pinned against each other.**
+  `tests/test-release-metadata.sh` fails if `run.sh` and `CLAUDE.md` disagree on
+  `HOME`, `ANTHROPIC_CONFIG_DIR`, `ANTHROPIC_HOME` or `GH_CONFIG_DIR`. Doc/code
+  drift is this repository's recurring failure mode; it is now a build failure.
+
+### 🔒 Security - Credential handling hygiene
+- **The authentication helper no longer writes your code to `/tmp/claude-auth-code`.**
+  It was written on every manual authentication and never read back: an
+  authentication code left in plaintext on disk for nothing.
+- **GitHub token entry rewritten.** The token was read inside a command
+  substitution subshell and `gh`'s output was sent to `/dev/null`, so a rejected
+  token looked like a successful login. It is now read in the current shell, errors
+  are visible, and the variable is unset afterwards.
+
 ### 🔧 Technical - Tests and CI
 - **Continuous integration added.** Nothing ran the existing test suite; the only
   workflow was the `@claude` mention handler. Pull requests and pushes now run

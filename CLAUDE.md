@@ -70,23 +70,30 @@ a real multi-arch image build.
 
 ### Key Components
 1. **Web Terminal**: Uses ttyd to provide browser-based terminal access
-2. **Credential Management**: Persistent authentication storage in `/config/claude-config/`
+2. **Credential Management**: Persistent authentication storage in `/data/.config/claude/`
 3. **Service Integration**: Home Assistant ingress support with panel icon
 4. **Multi-Architecture**: Supports amd64, aarch64, armv7 platforms
 
 ### Credential System
-The add-on implements a sophisticated credential management system:
-- **Persistent Storage**: Credentials saved to `/config/claude-config/` (survives restarts)
-- **Multiple Locations**: Handles various Claude credential file locations
-- **Background Service**: Continuous credential monitoring and saving
-- **Security**: Proper file permissions (600) and safe directory operations
+- **Persistent Storage**: Credentials live in `/data/.config/claude/`. `/data` is
+  the Supervisor-managed volume, guaranteed writable, and survives restarts,
+  add-on updates and reboots.
+- **`/config/claude-config/` is a LEGACY location**, not the current one. It is
+  read once by `migrate_legacy_auth_files`, which fills in only files missing from
+  `/data` (`cp -a -n`), never overwrites, and marks itself complete in
+  `/data/.auth-migration-complete` so it cannot run twice.
+- **Security**: credential files are chmod 600.
+- There is no background credential-monitoring service; earlier revisions
+  described one that was removed when the add-on moved to `/data`.
 
 ### Container Execution Flow
-1. Initialize environment and create credential directories
-2. Install ttyd and tools via apk
-3. Setup modular credential management scripts
-4. Start background credential monitoring service
-5. Launch ttyd web terminal with Claude auto-start
+1. Run the health check, then initialize the `/data` environment
+2. Verify required tools are present (they are baked into the image; the `apk`
+   path is only a fallback for older images)
+3. Configure tmux, the optional persistent Claude override, the session picker
+   and `persist-install`
+4. Start the Node image service under a supervisor and wait for `/health`
+5. `exec` ttyd on 127.0.0.1, attached to the persistent `claude` tmux session
 
 ## Development Notes
 
@@ -155,9 +162,20 @@ podman exec test-claude-dev chmod +x /opt/scripts/claude-session-picker.sh
 - **Permissions**: Credential files must have 600 permissions
 
 ### Key Environment Variables
-- `CLAUDE_CREDENTIALS_DIRECTORY=/config/claude-config`
-- `ANTHROPIC_CONFIG_DIR=/config/claude-config`
-- `HOME=/root`
+Set by `init_environment` in `run.sh` and mirrored into
+`/etc/profile.d/persistent-packages.sh` so every ttyd bash session inherits them.
+Keep the two copies in sync — `tests/test-release-metadata.sh` checks them.
+
+- `HOME=/data/home`
+- `ANTHROPIC_CONFIG_DIR=/data/.config/claude`
+- `ANTHROPIC_HOME=/data`
+- `XDG_CONFIG_HOME=/data/.config`, `XDG_CACHE_HOME=/data/.cache`
+- `GH_CONFIG_DIR=/data/.config/gh`
+- `IS_SANDBOX=1` (the add-on always runs as root in the Supervisor container)
+- `DISABLE_AUTOUPDATER=1` (Claude ships with the image; updates come via releases)
+
+There is no `CLAUDE_CREDENTIALS_DIRECTORY`; earlier revisions of this file
+documented one that the code never set.
 
 ### Important Constraints
 - No sudo privileges available in development environment
@@ -230,6 +248,13 @@ persist-install python3
 - `persist-install` installs to `/data/packages` (PERSISTENT storage)
 - `/data` is mounted from Home Assistant and survives all reboots
 
+**Known limit — be honest with users about it**: `persist-install` copies only
+executables and shared libraries into `/data/packages`. Packages that also need
+data files, configuration or helper binaries (`python3`, `git`, `perl`) may not
+work after a restart from the persistent copy alone. For those, prefer the
+`persistent_apk_packages` add-on option, which reinstalls them cleanly on each
+start.
+
 ### Usage Examples
 
 ```bash
@@ -238,9 +263,6 @@ persist-install python3 py3-pip git vim htop
 
 # Install Python packages
 persist-install --python requests pandas numpy
-
-# Install Home Assistant CLI (official ha command)
-persist-install --ha-cli
 
 # List installed packages
 persist-install --list
@@ -339,8 +361,11 @@ Claude: "You can interact with Home Assistant using the Supervisor API!
 - `jupyter` - Jupyter notebooks
 
 **Home Assistant CLI**:
-- `ha` - Official Home Assistant CLI (install with `persist-install --ha-cli`)
-  - Downloads from: https://github.com/home-assistant/cli
+- `ha` is **already installed** in the image at `/usr/bin/ha`. Do not install it
+  again: `/data/packages/bin` comes first in `PATH`, so a second copy shadows and
+  downgrades the bundled one. `persist-install --ha-cli` detects this and declines
+  (`--force` overrides).
+  - Upstream: https://github.com/home-assistant/cli
   - Provides commands: `ha core`, `ha supervisor`, `ha addons`, etc.
   - Alternative: Use Supervisor REST API (`http://supervisor/`) with `$SUPERVISOR_TOKEN`
   - See `scripts/ha-api-examples.sh` for API usage examples

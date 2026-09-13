@@ -170,11 +170,22 @@ launch_github_auth() {
         echo "  3. Select scopes: repo, read:org, workflow"
         echo "  4. Generate and copy the token"
         echo ""
-        gh auth login --with-token <<< "$(read -rsp 'Paste your token: ' token; echo "$token")" 2>/dev/null || {
-            # Fallback to interactive if the above fails
-            echo ""
+        # Read into this shell, not a command-substitution subshell, and do not
+        # swallow gh's error output: a rejected token used to look like success.
+        local token=""
+        printf 'Paste your token (input hidden): ' >&2
+        read -rs token
+        echo "" >&2
+
+        if [ -z "$token" ]; then
+            echo "No token entered, falling back to interactive login."
             gh auth login -p https -h github.com
-        }
+        elif ! printf '%s\n' "$token" | gh auth login --with-token; then
+            echo ""
+            echo "Token login failed, falling back to interactive login."
+            gh auth login -p https -h github.com
+        fi
+        unset token
     fi
 
     echo ""

@@ -49,4 +49,32 @@ fi
 grep -q 'interface 127.0.0.1' "$addon_dir/run.sh" || \
     fail "ttyd must bind 127.0.0.1 only; it runs --writable with no credentials"
 
+# The environment contract is written twice — once in init_environment and once
+# in the /etc/profile.d script that every ttyd bash session sources — and it was
+# also documented a third time in CLAUDE.md with values the code never set
+# (CLAUDE_CREDENTIALS_DIRECTORY, HOME=/root, the pre-/data config path). Pin all
+# three so a reader can trust the documentation.
+for pair in \
+    "HOME=/data/home" \
+    "ANTHROPIC_CONFIG_DIR=/data/.config/claude" \
+    "ANTHROPIC_HOME=/data" \
+    "GH_CONFIG_DIR=/data/.config/gh"
+do
+    var=${pair%%=*}
+    value=${pair#*=}
+
+    grep -q "^export ${var}=\"${value}\"$" "$addon_dir/run.sh" || \
+        fail "run.sh's profile script no longer exports ${var}=\"${value}\""
+
+    grep -q "\`${var}=${value}\`" "$repo_root/CLAUDE.md" || \
+        fail "CLAUDE.md does not document ${var}=${value}; docs and code have drifted"
+done
+
+grep -q 'CLAUDE_CREDENTIALS_DIRECTORY' "$addon_dir/run.sh" && \
+    fail "run.sh now sets CLAUDE_CREDENTIALS_DIRECTORY; update CLAUDE.md, which says it does not exist"
+
+# /config/claude-config is a legacy migration source, never the live location.
+grep -q 'claude_config_dir="/data/.config/claude"' "$addon_dir/run.sh" || \
+    fail "the live Claude config directory moved; CLAUDE.md and the migration notes need updating"
+
 echo "Release metadata suite passed (version $config_version)"
