@@ -1,5 +1,35 @@
 # Changelog
 
+## 2.2.1
+
+### 📚 Documentation - This fork now points at its own repository
+Installing a Home Assistant add-on repository means handing Supervisor a URL to
+clone. Every one of those URLs still named the upstream project, so adding this
+fork to Home Assistant would have installed **someone else's** add-on.
+
+- **`repository.yaml`** — the file Supervisor actually reads — now names this
+  repository and its maintainer.
+- **`config.yaml`**'s `url`, the "Add repository" button, the My Home Assistant
+  redirect, the release badge and the issues link all follow.
+- **`build.yaml`**'s `org.opencontainers.image.source` pointed at
+  `anthropics/claude-code`, which is the CLI, not this add-on. It now points at
+  this repository, so the built image identifies its real source.
+- **Attribution is preserved and made accurate**, as the MIT licence requires:
+  Tom Cassady wrote the original add-on, Javier Santos added persistent packages,
+  tmux persistence and multi-arch support, and this fork adds the security
+  hardening, the rewritten package manager and CI. The upstream maintainer's
+  personal "About the author" section was removed — it is his biography, not
+  this fork's.
+- **The README version badge** had been stuck at `2.0.13` for three releases.
+- CI now fails if `repository.yaml` and `config.yaml` disagree on the repository
+  URL, if the install instructions point somewhere else, or if the badge drifts
+  from the real version.
+
+### ⚠️ Note for installation
+Supervisor clones a repository's **default branch**. Make sure the branch you
+intend to serve is the one Home Assistant will fetch, or it will install an
+older revision than the one you are reading about here.
+
 ## 2.2.0
 
 ### 🐛 Bug Fix - `persist-install` did not actually make packages work after a restart

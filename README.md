@@ -1,7 +1,7 @@
 # Claude Terminal Pro for Home Assistant
 
-[![Version](https://img.shields.io/badge/version-2.0.13-1f6feb)](claude-terminal/CHANGELOG.md)
-[![Latest release](https://img.shields.io/github/v/release/ESJavadex/claude-code-ha?label=release&color=1f6feb)](https://github.com/ESJavadex/claude-code-ha/releases)
+[![Version](https://img.shields.io/badge/version-2.2.1-1f6feb)](claude-terminal/CHANGELOG.md)
+[![Latest release](https://img.shields.io/github/v/release/Moulbi/claude-code-ha?label=release&color=1f6feb)](https://github.com/Moulbi/claude-code-ha/releases)
 [![License: MIT](https://img.shields.io/badge/license-MIT-3fb950)](LICENSE)
 [![Architectures](https://img.shields.io/badge/arch-amd64%20%7C%20aarch64%20%7C%20armv7-8957e5)](#architecture-support)
 [![Base image](https://img.shields.io/badge/base-Alpine%203.21-0db7ed)](claude-terminal/Dockerfile)
@@ -10,19 +10,19 @@ A Home Assistant add-on that runs Anthropic's **Claude Code CLI** in a browser-b
 
 ![Claude Terminal Screenshot](claude-terminal/screenshot.png)
 
-> **Fork of** [heytcass/home-assistant-addons](https://github.com/heytcass/home-assistant-addons) by Tom Cassady, maintained by Javier Santos ([@esjavadex](https://github.com/esjavadex)). Same MIT license as the original.
+> **Fork of** [esjavadex/claude-code-ha](https://github.com/esjavadex/claude-code-ha) by Javier Santos, itself a fork of [heytcass/home-assistant-addons](https://github.com/heytcass/home-assistant-addons) by Tom Cassady. Maintained here by [@Moulbi](https://github.com/Moulbi). Same MIT license as the originals.
 
 ---
 
 ## Install
 
-[![Open your Home Assistant instance and show the add add-on repository dialog with a specific repository URL pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2Fesjavadex%2Fclaude-code-ha)
+[![Open your Home Assistant instance and show the add add-on repository dialog with a specific repository URL pre-filled.](https://my.home-assistant.io/badges/supervisor_add_addon_repository.svg)](https://my.home-assistant.io/redirect/supervisor_add_addon_repository/?repository_url=https%3A%2F%2Fgithub.com%2FMoulbi%2Fclaude-code-ha)
 
 Or add it manually:
 
 1. **Settings → Add-ons → Add-on Store**
 2. Top-right menu (⋮) → **Repositories**
-3. Add `https://github.com/esjavadex/claude-code-ha` and click **Add**
+3. Add `https://github.com/Moulbi/claude-code-ha` and click **Add**
 4. Install **Claude Terminal Pro**, start it, and open the panel from the sidebar
 
 Authentication uses OAuth — no API key or config needed for a normal setup. The terminal opens in your `/config` directory.
@@ -147,19 +147,16 @@ This drops a `CLAUDE.md` into your config directory with context tailored for Ho
 
 ## Support
 
-Found a bug or have a request? [Open an issue](https://github.com/ESJavadex/claude-code-ha/issues).
+Found a bug or have a request? [Open an issue](https://github.com/Moulbi/claude-code-ha/issues).
 
 ## Credits
 
 - **Original creator:** Tom Cassady ([@heytcass](https://github.com/heytcass)) — the initial Claude Terminal add-on
-- **Fork maintainer:** Javier Santos ([@esjavadex](https://github.com/esjavadex)) — persistent packages, tmux persistence, multi-arch, and ongoing enhancements
+- **Upstream fork:** Javier Santos ([@esjavadex](https://github.com/esjavadex)) — persistent packages, tmux persistence, multi-arch support
+- **This fork:** [@Moulbi](https://github.com/Moulbi) — security hardening (no published host ports, loopback-only ttyd, reduced Supervisor role), the rewritten persistent package manager, and CI
 
 Built and maintained with the help of Claude Code itself.
 
 ## License
 
 MIT — see [LICENSE](LICENSE).
-
-## About the author
-
-Maintained by **Javier Santos** ([@ESJavadex](https://github.com/ESJavadex)) — AI consultant and founder of [Javadex](https://www.javadex.es/), where I help companies run private AI platforms. I also build [Cortex](https://www.javadex.es/plataforma), a self-hosted multi-model AI platform (the same "your AI, your data" philosophy as this add-on). More AI + Home Assistant content (in Spanish) on the [Javadex blog](https://www.javadex.es/blog).

@@ -6,7 +6,7 @@ An enhanced, web-based terminal with Claude Code CLI and persistent package mana
 
 *Claude Terminal Pro running in Home Assistant*
 
-> **Fork Attribution:** This is an enhanced fork of [heytcass/home-assistant-addons](https://github.com/heytcass/home-assistant-addons) by Tom Cassady, maintained by Javier Santos ([@esjavadex](https://github.com/esjavadex)).
+> **Fork Attribution:** Forked from [esjavadex/claude-code-ha](https://github.com/esjavadex/claude-code-ha) by Javier Santos, itself an enhanced fork of [heytcass/home-assistant-addons](https://github.com/heytcass/home-assistant-addons) by Tom Cassady. Maintained here by [@Moulbi](https://github.com/Moulbi).
 
 ## What is Claude Terminal Pro?
 
@@ -65,7 +65,7 @@ claude-logout
 1. Add this repository to your Home Assistant add-on store:
    - Go to Settings → Add-ons → Add-on Store
    - Click the menu (⋮) and select Repositories
-   - Add: `https://github.com/esjavadex/claude-code-ha`
+   - Add: `https://github.com/Moulbi/claude-code-ha`
 2. Install the Claude Terminal Pro add-on
 3. Start the add-on
 4. Click "OPEN WEB UI" or the sidebar icon to access
@@ -178,8 +178,9 @@ For detailed usage instructions, see the [documentation](DOCS.md).
 
 ## Credits
 
-**Original Creator:** Tom Cassady ([@heytcass](https://github.com/heytcass)) - Created the initial Claude Terminal add-on
-**Fork Maintainer:** Javier Santos ([@esjavadex](https://github.com/esjavadex)) - Added persistent package management and enhancements
+- **Original creator:** Tom Cassady ([@heytcass](https://github.com/heytcass)) — the initial Claude Terminal add-on
+- **Upstream fork:** Javier Santos ([@esjavadex](https://github.com/esjavadex)) — persistent packages, tmux persistence, multi-arch support
+- **This fork:** [@Moulbi](https://github.com/Moulbi) — security hardening (no published host ports, loopback-only ttyd, reduced Supervisor role), the rewritten persistent package manager, and CI
 
 This add-on was created and enhanced with the assistance of Claude Code itself! The development process, debugging, and documentation were all completed using Claude's AI capabilities - a perfect demonstration of what this add-on can help you accomplish.
 

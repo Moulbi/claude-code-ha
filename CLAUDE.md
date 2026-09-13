@@ -6,7 +6,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 This repository contains Home Assistant add-ons, specifically the **Claude Terminal Pro** add-on which provides a web-based terminal interface with Claude Code CLI pre-installed and persistent package management. The add-on allows Home Assistant users to access Claude AI capabilities directly from their dashboard.
 
-**Fork Attribution:** This is an enhanced fork of [heytcass/home-assistant-addons](https://github.com/heytcass/home-assistant-addons) by Tom Cassady, maintained by Javier Santos ([@esjavadex](https://github.com/esjavadex)). The fork adds persistent package management, auto-install configuration, and enhanced documentation.
+**Fork Attribution:** Forked from [esjavadex/claude-code-ha](https://github.com/esjavadex/claude-code-ha) by Javier Santos (persistent package management, multi-arch, tmux persistence), itself a fork of [heytcass/home-assistant-addons](https://github.com/heytcass/home-assistant-addons) by Tom Cassady. Maintained here by [@Moulbi](https://github.com/Moulbi); this fork adds the security hardening, the rewritten package manager and CI described below.
 
 ## Development Environment
 
