@@ -24,15 +24,18 @@ mkdir -p /tmp/test-config/claude-config
 echo '{"auto_launch_claude": false}' > /tmp/test-config/options.json
 
 # 3. Run test container
+# Publish 7680 (the image service / ingress entry point), not 7681.
+# ttyd binds 127.0.0.1 inside the container and is reached through the
+# image service's /terminal proxy, so -p 7681:7681 would connect to nothing.
 podman run -d --name test-claude-dev \
-  -p 7681:7681 \
+  -p 7680:7680 \
   -v /tmp/test-config:/config \
   local/claude-terminal:test
 
 # 4. Check startup logs
 podman logs test-claude-dev
 
-# 5. Test in browser: http://localhost:7681
+# 5. Test in browser: http://localhost:7680
 
 # 6. Clean up when done
 podman stop test-claude-dev && podman rm test-claude-dev
@@ -54,11 +57,11 @@ podman build --build-arg BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.21 \
 podman stop test-claude-dev && podman rm test-claude-dev
 
 # Start new container with changes
-podman run -d --name test-claude-dev -p 7681:7681 \
+podman run -d --name test-claude-dev -p 7680:7680 \
   -v /tmp/test-config:/config local/claude-terminal:test
 
 # Test changes
-open http://localhost:7681
+open http://localhost:7680
 ```
 
 #### 2. Hot-reload Script Testing
@@ -105,8 +108,8 @@ cp ~/.config/anthropic/* /tmp/test-config/claude-config/
 
 ```bash
 # Run multiple containers on different ports
-podman run -d --name test-claude-dev-8681 -p 8681:7681 -v /tmp/test-config-2:/config local/claude-terminal:test
-podman run -d --name test-claude-dev-9681 -p 9681:7681 -v /tmp/test-config-3:/config local/claude-terminal:test
+podman run -d --name test-claude-dev-8680 -p 8680:7680 -v /tmp/test-config-2:/config local/claude-terminal:test
+podman run -d --name test-claude-dev-9680 -p 9680:7680 -v /tmp/test-config-3:/config local/claude-terminal:test
 ```
 
 ### Debugging Techniques
@@ -144,16 +147,17 @@ podman exec test-claude-dev ls -la /config/claude-config/
 #### Network Testing
 
 ```bash
-# Test web endpoint
-curl -I http://localhost:7681
+# Test web endpoint and the service health probe used at startup
+curl -I http://localhost:7680
+curl -fsS http://localhost:7680/health
 
-# Test WebSocket connection
+# Test the proxied WebSocket connection (ttyd is not exposed directly)
 curl --include --no-buffer \
   --header "Connection: Upgrade" \
   --header "Upgrade: websocket" \
   --header "Sec-WebSocket-Key: SGVsbG8sIHdvcmxkIQ==" \
   --header "Sec-WebSocket-Version: 13" \
-  http://localhost:7681/ws
+  http://localhost:7680/terminal/ws
 ```
 
 ### Performance Testing
@@ -176,7 +180,7 @@ podman history local/claude-terminal:test
 ```bash
 # Multiple concurrent connections
 for i in {1..5}; do
-  curl http://localhost:7681 &
+  curl http://localhost:7680 &
 done
 wait
 ```
@@ -185,11 +189,11 @@ wait
 
 #### Port Already In Use
 ```bash
-# Find and kill process using port 7681
-sudo lsof -ti:7681 | xargs kill -9
+# Find and kill process using port 7680
+sudo lsof -ti:7680 | xargs kill -9
 
 # Or use different port
-podman run -d --name test-claude-dev -p 7682:7681 -v /tmp/test-config:/config local/claude-terminal:test
+podman run -d --name test-claude-dev -p 7682:7680 -v /tmp/test-config:/config local/claude-terminal:test
 ```
 
 #### Volume Mount Issues
@@ -265,7 +269,7 @@ The changes will automatically be built and distributed to Home Assistant users.
 mkdir -p /tmp/ha-config/{.storage,claude-config}
 echo '{"auto_launch_claude": false}' > /tmp/ha-config/options.json
 
-podman run -d --name test-ha-claude -p 7681:7681 \
+podman run -d --name test-ha-claude -p 7680:7680 \
   -v /tmp/ha-config:/config local/claude-terminal:test
 ```
 

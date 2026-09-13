@@ -1,5 +1,92 @@
 # Changelog
 
+## 2.1.0
+
+### 🔒 Security - The add-on no longer publishes a root shell on your LAN
+- **Breaking, and deliberate: no host ports are published any more.** `config.yaml`
+  mapped `7680` and `7681` to the host. Home Assistant publishes declared ports by
+  default, and `ttyd` runs `--writable` with no credentials, so anyone who could
+  reach `http://<home-assistant>:7681` got an unauthenticated **root shell** in a
+  container holding `/config` read-write, `hassio_role: manager`, the Home
+  Assistant API and `SUPERVISOR_TOKEN`. Ingress authentication was simply bypassed.
+  - Ingress reaches the container over the internal Docker network and needs no
+    host port, so nothing legitimate is lost.
+  - **If you were opening the add-on by IP and port, use the sidebar panel instead.**
+- **ttyd now binds `127.0.0.1`** instead of `0.0.0.0`. Its only legitimate consumer
+  is the image service, which proxies `/terminal` over the loopback.
+- **Local add-on state is no longer tracked in git** (`config/claude-config/`,
+  `config/options.json`). That directory is where Claude and `gh` drop credential
+  files, and nothing stopped one from being committed.
+- **Dependencies**: `multer` 1.x (deprecated, known DoS advisories) upgraded to 2.x,
+  and `qs` pinned to a patched release. `npm audit` is clean, with no major
+  framework upgrade.
+
+### 🐛 Bug Fix - The image service health check was always green
+- **`$!` after a pipeline is the wrong PID.** The service was started as
+  `node ... | while read`, and `$!` captured the logging loop, not node. The
+  `kill -0` readiness probe therefore passed unconditionally: *"Image service is
+  running successfully"* was logged even when the service had already died.
+  Readiness is now proven by an actual `/health` response.
+- **The image service is now supervised and restarted** with capped backoff.
+  Previously, if it died the ingress panel went blank until a manual restart,
+  because it serves the entry point and proxies the terminal.
+
+### 🐛 Bug Fix - Credential migration never migrated credentials, then overwrote them
+- **Hidden files were skipped.** The migration copied `"$legacy_path"/*`, a glob
+  that does not match dotfiles — so it skipped exactly the files it exists for
+  (`.credentials.json`, `.claude.json`). It now copies `"$legacy_path/."`.
+- **Fixing that glob alone would have been worse than the bug.** Correctly copying
+  dotfiles would, once, overwrite working credentials in `/data` with the stale
+  copy in `/config`. Migration now runs with `cp -a -n`: it only fills in files
+  that are missing, which is all a migration should ever do.
+- **It ran on every start.** Described as one-time in a comment but not in code, it
+  re-copied legacy files over `/data` at each boot, letting a stale file left in
+  `/config` overwrite freshly obtained credentials. It now records a marker in
+  `/data` and runs exactly once.
+
+### 🐛 Bug Fix - A WebSocket arriving first was never proxied
+- `http-proxy-middleware` only subscribes to `upgrade` lazily, on the first HTTP
+  request through the middleware. A terminal reconnect that opened with the
+  WebSocket handshake hung until timeout. The server now subscribes explicitly.
+
+### 🛠️ Improvement - Startup no longer depends on the Alpine mirrors
+- **`ttyd` and `tmux` are baked into the image.** `run.sh` ran an unconditional
+  `apk add ttyd jq curl tmux` on *every* container start, with `exit 1` on failure:
+  the add-on refused to start whenever the mirrors were unreachable, and paid the
+  download on each boot. `jq` and `curl` were already in the image and were being
+  re-fetched for nothing. The runtime `apk` path remains only as a fallback for
+  images built before this change.
+
+### 🛠️ Improvement - `persist-install`
+- **`--ha-cli` no longer downgrades the bundled CLI.** It installed a hardcoded
+  `4.42.0` into `/data/packages/bin`, which comes *first* in `PATH` and therefore
+  shadowed the newer `ha` shipped in the image. It now detects the bundled CLI and
+  declines, with `--force` as an escape hatch.
+- **A failed `apk add` no longer killed the caller's shell** (`exit 1` → `return 1`).
+- **Honest limits**: installing system packages now states that only executables and
+  shared libraries are copied, so packages needing data files may not survive a
+  restart from the persistent copy alone.
+
+### 🔧 Technical - Tests and CI
+- **Continuous integration added.** Nothing ran the existing test suite; the only
+  workflow was the `@claude` mention handler. Pull requests and pushes now run
+  shellcheck, hadolint, the shell suites, the Node suite and a real image build.
+- **The image service has tests for the first time** (9 cases): health, config,
+  upload, rejection of non-image payloads, hostile filenames, the HTTP proxy and
+  the WebSocket upgrade — including the first-request upgrade regression above.
+- **Regression tests for every fix in this release**: tool installation, migration
+  idempotence, dotfile migration, and readiness probing.
+- **Release metadata is enforced**: `config.yaml`, `build.yaml` and `CHANGELOG.md`
+  must agree on the version, every declared architecture must have a base image,
+  and the security invariants above are asserted in CI.
+- **Dead code removed.** `scripts/persistent-packages.sh` (201 lines) was never
+  called by `run.sh`, which carries its own copy of those functions — yet half the
+  test suite exercised only that dead file. Its real equivalent in `run.sh` is
+  already covered by `test-production-run.sh`.
+- **Reproducible dependency installs**: `package-lock.json` is now committed and the
+  image builds with `npm ci`, so two images tagged with the same version contain the
+  same dependency tree.
+
 ## 2.0.13
 
 ### Bug fixes

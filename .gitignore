@@ -4,8 +4,10 @@
 node_modules/
 npm-debug.log
 yarn-error.log
-package-lock.json
 yarn.lock
+# package-lock.json is deliberately committed: the image build uses `npm ci`
+# so that two images tagged with the same add-on version contain the same
+# dependency tree.
 
 # Logs
 *.log
@@ -33,3 +35,8 @@ dist/
 # Operating System Files
 .DS_Store
 Thumbs.db
+
+# Local add-on runtime state (mounted at /config in the container).
+# Never commit it: this is where Claude and gh drop credential files.
+/config/claude-config/
+/config/options.json

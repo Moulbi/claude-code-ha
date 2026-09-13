@@ -97,8 +97,11 @@ app.post('/upload', upload.single('image'), (req, res) => {
 // Proxy endpoint for ttyd terminal
 // This allows ttyd to work through Home Assistant ingress
 // Handles both HTTP and WebSocket connections
-app.use('/terminal', createProxyMiddleware({
-    target: `http://localhost:${TTYD_PORT}`,
+// Target 127.0.0.1 explicitly rather than "localhost": ttyd binds the loopback
+// IPv4 address only, and Node resolves "localhost" verbatim since v17, so a
+// container whose /etc/hosts lists ::1 first would get ECONNREFUSED.
+const terminalProxy = createProxyMiddleware({
+    target: `http://127.0.0.1:${TTYD_PORT}`,
     changeOrigin: true,
     ws: true, // Enable WebSocket proxying
     pathRewrite: {
@@ -114,7 +117,9 @@ app.use('/terminal', createProxyMiddleware({
         }
     },
     logLevel: 'warn'
-}));
+});
+
+app.use('/terminal', terminalProxy);
 
 // Serve static files (HTML interface) - MUST be after API routes
 app.use(express.static(path.join(__dirname, 'public')));
@@ -143,6 +148,14 @@ app.use((err, req, res, next) => {
 // Create HTTP server and start listening
 const server = http.createServer(app);
 
+// Subscribe to 'upgrade' explicitly so a WebSocket handshake that arrives
+// before any HTTP request has passed through the proxy is still forwarded.
+// http-proxy-middleware guards this with an internal flag, so this cannot
+// double-handle an upgrade it already subscribed to itself.
+server.on('upgrade', terminalProxy.upgrade);
+
+// Binds 0.0.0.0 because Home Assistant ingress connects over the internal
+// Docker network, not the loopback. No host port is published (see config.yaml).
 server.listen(PORT, '0.0.0.0', () => {
     console.log(`Claude Terminal Image Service running on port ${PORT}`);
     console.log(`Upload directory: ${UPLOAD_DIR}`);

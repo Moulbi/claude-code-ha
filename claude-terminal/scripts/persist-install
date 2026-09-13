@@ -84,7 +84,9 @@ install_system_packages() {
     echo "⏳ Installing via APK..."
     if ! apk add --no-cache "$@"; then
         echo "❌ Failed to install packages"
-        exit 1
+        # return, never exit: this function is called from an interactive shell
+        # and from auto_install_packages at startup. `exit` killed the caller.
+        return 1
     fi
 
     # Copy to persistent storage
@@ -115,6 +117,13 @@ install_system_packages() {
     echo ""
     echo "✅ System packages installed and persisted!"
     echo "💡 These packages will survive container restarts"
+    echo ""
+    echo "⚠️  Note: only executables and shared libraries are copied to"
+    echo "   $PERSIST_ROOT. Packages that also need data files, config or"
+    echo "   helper files (python3, git, perl...) may not work after a restart"
+    echo "   from the persistent copy alone. For those, prefer listing them in"
+    echo "   the add-on's persistent_apk_packages option, which reinstalls them"
+    echo "   cleanly on each start."
 }
 
 install_python_packages() {
@@ -156,12 +165,27 @@ install_python_packages() {
 }
 
 install_ha_cli() {
-    local HA_VERSION="4.42.0"
+    # Keep this in sync with the Dockerfile's 32-bit pin. The image already
+    # ships `ha` in /usr/bin, and $PERSIST_BIN comes FIRST in PATH, so an
+    # unconditional install here silently downgraded a working newer CLI.
+    local HA_VERSION="4.46.0"
     local BASE_URL="https://github.com/home-assistant/cli/releases/download/${HA_VERSION}"
+    local image_ha="/usr/bin/ha"
+
+    if [ -x "$image_ha" ] && [ "${1:-}" != "--force" ]; then
+        echo "ℹ️  Home Assistant CLI is already provided by the add-on image:"
+        echo "   $image_ha ($("$image_ha" --version 2>/dev/null | head -1 || echo 'version unavailable'))"
+        echo ""
+        echo "   Installing a second copy into $PERSIST_BIN would take priority"
+        echo "   in PATH and could downgrade it. Nothing to do."
+        echo "   Use 'persist-install --ha-cli --force' if you really want one."
+        return 0
+    fi
 
     # Detect architecture
-    local machine=$(uname -m)
+    local machine
     local arch=""
+    machine=$(uname -m)
 
     case "$machine" in
         x86_64)     arch="amd64" ;;
@@ -210,7 +234,8 @@ install_ha_cli() {
     fi
 
     # Check file size (should be > 1MB)
-    local size=$(stat -f%z "${target_path}" 2>/dev/null || stat -c%s "${target_path}" 2>/dev/null || echo "0")
+    local size
+    size=$(stat -f%z "${target_path}" 2>/dev/null || stat -c%s "${target_path}" 2>/dev/null || echo "0")
     if [ "$size" -lt 1000000 ]; then
         echo "❌ Downloaded file is too small (${size} bytes)"
         rm -f "${target_path}"
@@ -266,7 +291,8 @@ main() {
             install_python_packages "$@"
             ;;
         --ha-cli|ha-cli|ha)
-            install_ha_cli
+            shift
+            install_ha_cli "$@"
             ;;
         "")
             show_help

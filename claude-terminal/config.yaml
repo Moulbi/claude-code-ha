@@ -1,7 +1,7 @@
 ---
 name: "Claude Terminal Pro"
 description: "Enhanced terminal interface for Anthropic's Claude Code CLI with persistent auth, package management, and image paste support. Fork of heytcass/home-assistant-addons"
-version: "2.0.13"
+version: "2.1.0"
 slug: "claude_terminal_pro"
 init: false
 
@@ -22,12 +22,17 @@ panel_title: "Claude Terminal Pro"
 panel_admin: true
 
 # Port configuration
-ports:
-  7680/tcp: 7680
-  7681/tcp: 7681
-ports_description:
-  7680/tcp: "Image upload service and web interface"
-  7681/tcp: "ttyd terminal (embedded in web interface)"
+#
+# No host ports are published. The add-on is reached exclusively through Home
+# Assistant ingress, which enforces HA authentication.
+#
+# Publishing these ports would expose an unauthenticated, writable root shell
+# (ttyd runs with --writable and no credentials) inside a container that holds
+# /config read-write, the Supervisor manager role and SUPERVISOR_TOKEN. Ingress
+# reaches the container over the internal Docker network and does not require a
+# host port mapping, so there is nothing to gain and a full host takeover to
+# lose. ttyd itself now binds to 127.0.0.1 and is only reachable through the
+# ingress web interface on port 7680.
 
 # Add-on configuration options
 options:
@@ -62,6 +67,3 @@ auth_api: true
 
 # Service startup configuration
 startup: services
-
-# Web UI access URL
-webui: http://[HOST]:[PORT:7680]/

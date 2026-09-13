@@ -1,11 +1,16 @@
 ARG BUILD_FROM
 FROM ${BUILD_FROM}
 
-# Install packages in a single layer to minimize image size
-# Node.js and npm kept for image-service dependency
+# Install packages in a single layer to minimize image size.
+# Node.js and npm are kept for the image-service dependency.
+# ttyd and tmux are baked in on purpose: they used to be installed by run.sh on
+# every container start, which made startup depend on the Alpine mirrors being
+# reachable and aborted the add-on when they were not.
 RUN apk add --no-cache \
     nodejs \
     npm \
+    ttyd \
+    tmux \
     bash \
     curl \
     nano \
@@ -123,10 +128,13 @@ RUN ADDON_ARCH=$(cat /etc/addon-arch); \
 RUN mkdir -p /config/claude-config
 WORKDIR /config
 
-# Copy and install image service
+# Copy and install image service.
+# `npm ci` installs exactly the committed lockfile, so two images built from the
+# same add-on version get the same dependency tree. `npm install` resolved
+# semver ranges at build time and could silently ship different code.
 COPY image-service/ /opt/image-service/
 RUN cd /opt/image-service \
-    && npm install --production --no-optional \
+    && npm ci --omit=dev \
     && npm cache clean --force \
     && chmod +x server.js
 

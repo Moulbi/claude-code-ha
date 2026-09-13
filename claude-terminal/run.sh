@@ -143,24 +143,48 @@ PROFILE_EOF
 # One-time migration of existing authentication files
 migrate_legacy_auth_files() {
     local target_dir="$1"
+    local marker="${AUTH_MIGRATION_MARKER:-/data/.auth-migration-complete}"
     local migrated=false
+
+    # This must run exactly once. It copies legacy credential files over the
+    # live ones in /data, so re-running it on every start lets a stale file left
+    # behind in /config silently overwrite current, working credentials.
+    if [ -f "$marker" ]; then
+        bashio::log.info "Legacy auth migration already completed on $(cat "$marker" 2>/dev/null), skipping"
+        return 0
+    fi
 
     bashio::log.info "Checking for existing authentication files to migrate..."
 
-    # Check common legacy locations
-    local legacy_locations=(
-        "/root/.config/anthropic"
-        "/root/.anthropic" 
-        "/config/claude-config"
-        "/tmp/claude-config"
-    )
+    # Check common legacy locations.
+    # AUTH_LEGACY_LOCATIONS is a test seam: a newline-separated directory list.
+    local -a legacy_locations
+    if [ -n "${AUTH_LEGACY_LOCATIONS:-}" ]; then
+        mapfile -t legacy_locations <<< "$AUTH_LEGACY_LOCATIONS"
+    else
+        legacy_locations=(
+            "/root/.config/anthropic"
+            "/root/.anthropic"
+            "/config/claude-config"
+            "/tmp/claude-config"
+        )
+    fi
 
     for legacy_path in "${legacy_locations[@]}"; do
         if [ -d "$legacy_path" ] && [ "$(ls -A "$legacy_path" 2>/dev/null)" ]; then
             bashio::log.info "Migrating auth files from: $legacy_path"
             
-            # Copy files to new location
-            if cp -r "$legacy_path"/* "$target_dir/" 2>/dev/null; then
+            # Copy files to the new location, dotfiles included, never
+            # overwriting what is already there.
+            #
+            # Two separate bugs met here. `"$legacy_path"/*` does not match
+            # dotfiles, so this silently skipped exactly the files it exists for
+            # (.credentials.json, .claude.json) — "/." copies hidden entries.
+            # But simply fixing the glob would make this overwrite live
+            # credentials in /data with a stale legacy copy the first time it
+            # ran. -n makes migration fill in only what is missing, which is all
+            # a migration should ever do.
+            if cp -a -n "$legacy_path/." "$target_dir/" 2>/dev/null; then
                 # Set proper permissions
                 find "$target_dir" -type f -exec chmod 600 {} \;
                 
@@ -182,13 +206,36 @@ migrate_legacy_auth_files() {
     if [ "$migrated" = false ]; then
         bashio::log.info "No existing authentication files found to migrate"
     fi
+
+    # Record completion whether or not anything was found, so a legacy file
+    # appearing in /config later can never clobber live credentials.
+    date -u '+%Y-%m-%dT%H:%M:%SZ' > "$marker" 2>/dev/null || \
+        bashio::log.warning "Could not write migration marker: $marker"
 }
 
-# Install required tools
+# Verify required tools, installing only what the image is missing.
+#
+# ttyd, tmux, jq and curl are all baked into the image by the Dockerfile. This
+# used to run an unconditional `apk add` on every container start, which made
+# startup depend on the Alpine mirrors being reachable and aborted the add-on
+# outright when they were not. The apk path is kept purely as a fallback for
+# images built before these packages were baked in.
 install_tools() {
-    bashio::log.info "Installing additional tools..."
-    if ! apk add --no-cache ttyd jq curl tmux; then
-        bashio::log.error "Failed to install required tools"
+    local -a missing=()
+    local tool
+
+    for tool in ttyd tmux jq curl; do
+        command -v "$tool" >/dev/null 2>&1 || missing+=("$tool")
+    done
+
+    if [ "${#missing[@]}" -eq 0 ]; then
+        bashio::log.info "Required tools present in image (no download needed)"
+        return 0
+    fi
+
+    bashio::log.warning "Tools missing from image, installing at runtime: ${missing[*]}"
+    if ! apk add --no-cache "${missing[@]}"; then
+        bashio::log.error "Failed to install required tools: ${missing[*]}"
         exit 1
     fi
     bashio::log.info "Tools installed successfully"
@@ -458,26 +505,80 @@ start_image_service() {
         cd - > /dev/null
     fi
 
-    # Start with better error logging (run from current directory with absolute path)
+    # Start the service under a supervisor and wait for it to actually answer.
+    #
+    # The previous implementation piped node into a `while read` loop and stored
+    # $! as "the service PID". In bash, $! after a pipeline is the PID of the
+    # LAST element, so it captured the logging loop, not node. That loop outlives
+    # a node that dies instantly, which made the `kill -0` readiness check pass
+    # unconditionally: "Image service is running successfully" was printed even
+    # when the service was already dead. Readiness is now proven by an actual
+    # /health response.
     bashio::log.info "Starting Node.js service from ${server_file}..."
-    node "${server_file}" 2>&1 | while IFS= read -r line; do
-        bashio::log.info "[Image Service] $line"
-    done &
+    run_image_service_supervised "${server_file}" &
+    IMAGE_SERVICE_SUPERVISOR_PID=$!
+    export IMAGE_SERVICE_SUPERVISOR_PID
 
-    # Store the PID for potential cleanup
-    local image_service_pid=$!
-    bashio::log.info "Image service started (PID: ${image_service_pid})"
-
-    # Give it a moment to start
-    sleep 3
-
-    # Check if it's running
-    if kill -0 "${image_service_pid}" 2>/dev/null; then
-        bashio::log.info "Image service is running successfully"
-    else
-        bashio::log.error "Image service failed to start! Check logs above for errors"
-        return 1
+    if wait_for_image_service "${image_port}" "${IMAGE_SERVICE_SUPERVISOR_PID}"; then
+        bashio::log.info "Image service is healthy on port ${image_port}"
+        return 0
     fi
+
+    bashio::log.error "Image service never became healthy on port ${image_port}."
+    bashio::log.error "It serves the ingress entry point, so the add-on panel would be blank."
+    return 1
+}
+
+# Forward image-service output into the add-on log, one line at a time.
+log_image_service_output() {
+    local line
+    while IFS= read -r line; do
+        bashio::log.info "[Image Service] $line"
+    done
+}
+
+# Keep the image service alive: it serves the ingress entry point and proxies
+# the terminal, so if it dies the add-on panel goes blank until someone
+# restarts the add-on by hand. Backoff is capped so a hard failure does not
+# spin the CPU on a Raspberry Pi.
+run_image_service_supervised() {
+    local server_file="$1"
+    local backoff=1
+    local exit_code
+
+    while true; do
+        exit_code=0
+        node "${server_file}" > >(log_image_service_output) 2>&1 || exit_code=$?
+        bashio::log.warning "Image service exited (code ${exit_code}); restarting in ${backoff}s"
+        sleep "${backoff}"
+        if [ "${backoff}" -lt 30 ]; then
+            backoff=$(( backoff * 2 ))
+        fi
+    done
+}
+
+# Poll /health until the service answers, the supervisor dies, or we time out.
+wait_for_image_service() {
+    local port="$1"
+    local supervisor_pid="$2"
+    local attempts="${IMAGE_SERVICE_HEALTH_ATTEMPTS:-30}"
+    local attempt
+
+    for (( attempt = 1; attempt <= attempts; attempt++ )); do
+        if [ -n "$supervisor_pid" ] && ! kill -0 "$supervisor_pid" 2>/dev/null; then
+            bashio::log.error "Image service supervisor exited before becoming healthy"
+            return 1
+        fi
+
+        if curl -fsS --max-time 2 "http://127.0.0.1:${port}/health" >/dev/null 2>&1; then
+            bashio::log.info "Image service answered /health after ${attempt} attempt(s)"
+            return 0
+        fi
+
+        sleep 1
+    done
+
+    return 1
 }
 
 # Start main web terminal
@@ -516,9 +617,17 @@ start_web_terminal() {
     # ttyd attaches every browser connection to the persistent tmux session.
     # If Claude is running and you close the browser tab, it keeps running.
     # Reopening the tab re-attaches to the same session.
+    # Bind ttyd to the loopback interface only.
+    #
+    # ttyd runs --writable with no credentials, so anything that can reach this
+    # socket gets an unauthenticated root shell in a container holding /config
+    # read-write and SUPERVISOR_TOKEN. The only legitimate consumer is the image
+    # service, which proxies /terminal over localhost, and Home Assistant
+    # ingress terminates on the image service port instead. Nothing outside the
+    # container needs to reach this port.
     exec ttyd \
         --port "${port}" \
-        --interface 0.0.0.0 \
+        --interface 127.0.0.1 \
         --writable \
         --ping-interval 30 \
         --client-option reconnect=5 \

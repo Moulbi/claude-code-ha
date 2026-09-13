@@ -1,0 +1,115 @@
+name: CI
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint shell and Dockerfile
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: ShellCheck
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq shellcheck
+          # SC1008: bashio shebang is not a shell ShellCheck knows.
+          # SC1007: `CDPATH= cd` is a deliberate idiom.
+          # SC2155: pre-existing style across the add-on scripts.
+          shellcheck -S warning -e SC1008,SC1007,SC2155 -x \
+            claude-terminal/run.sh \
+            claude-terminal/scripts/*.sh \
+            claude-terminal/scripts/persist-install \
+            tests/*.sh
+
+      - name: Hadolint
+        uses: hadolint/hadolint-action@v3.1.0
+        with:
+          dockerfile: claude-terminal/Dockerfile
+          # DL3018: Alpine packages are intentionally unpinned, the base image
+          # tag pins the repository snapshot.
+          ignore: DL3018
+
+      - name: Validate add-on YAML
+        run: |
+          python3 - <<'PY'
+          import sys
+          try:
+              import yaml
+          except ImportError:
+              sys.exit("pyyaml missing")
+          for f in ("claude-terminal/config.yaml", "claude-terminal/build.yaml",
+                    "repository.yaml"):
+              with open(f) as fh:
+                  yaml.safe_load(fh)
+              print(f"{f}: valid YAML")
+          PY
+
+  test:
+    name: Regression suites
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: npm
+          cache-dependency-path: claude-terminal/image-service/package-lock.json
+
+      - name: Install image service dependencies
+        working-directory: claude-terminal/image-service
+        run: npm ci
+
+      - name: Audit image service dependencies
+        working-directory: claude-terminal/image-service
+        run: npm audit --omit=dev --audit-level=high
+
+      - name: Run all suites
+        run: ./tests/run-tests.sh
+
+  build:
+    name: Build image (${{ matrix.arch }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: amd64
+            base: ghcr.io/home-assistant/amd64-base:3.21
+            platform: linux/amd64
+          - arch: aarch64
+            base: ghcr.io/home-assistant/aarch64-base:3.21
+            platform: linux/arm64
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up QEMU
+        if: matrix.arch != 'amd64'
+        uses: docker/setup-qemu-action@v3
+
+      - uses: docker/setup-buildx-action@v3
+
+      # Builds only, never pushes. This is the check that was missing when the
+      # ARMv7 architecture detection silently broke every 32-bit build.
+      - name: Build add-on image
+        uses: docker/build-push-action@v6
+        with:
+          context: claude-terminal
+          platforms: ${{ matrix.platform }}
+          push: false
+          load: false
+          build-args: |
+            BUILD_FROM=${{ matrix.base }}
+            BUILD_ARCH=${{ matrix.arch }}

@@ -21,9 +21,9 @@ direnv allow
 
 ### Core Development Commands
 - `build-addon` - Build the Claude Terminal Pro add-on with Podman
-- `run-addon` - Run add-on locally on port 7681 with volume mapping
+- `run-addon` - Run add-on locally on port 7680 with volume mapping
 - `lint-dockerfile` - Lint Dockerfile using hadolint
-- `test-endpoint` - Test web endpoint availability (curl localhost:7681)
+- `test-endpoint` - Test web endpoint availability (curl localhost:7680)
 
 ### Manual Commands (without aliases)
 ```bash
@@ -31,16 +31,35 @@ direnv allow
 podman build --build-arg BUILD_FROM=ghcr.io/home-assistant/amd64-base:3.21 -t local/claude-terminal-pro ./claude-terminal
 
 # Run locally
-podman run -p 7681:7681 -v $(pwd)/config:/config local/claude-terminal-pro
+podman run -p 7680:7680 -v $(pwd)/config:/config local/claude-terminal-pro
 
 # Lint
 hadolint ./claude-terminal/Dockerfile
 
 # Test endpoint
-curl -X GET http://localhost:7681/
+curl -X GET http://localhost:7680/
 ```
 
 ## Architecture
+
+### Networking model (do not regress)
+The add-on publishes **no host port**. `ttyd` runs `--writable` with no
+credentials, so any reachable socket is an unauthenticated root shell in a
+container holding `/config` read-write and `SUPERVISOR_TOKEN`.
+
+- Home Assistant ingress terminates on port **7680** (the Node image service),
+  which reaches the container over the internal Docker network — no host port
+  mapping is needed or wanted.
+- `ttyd` binds **127.0.0.1:7681** and is reached only via the image service's
+  `/terminal` proxy.
+- Never add a `ports:` mapping to `config.yaml` and never bind ttyd to
+  `0.0.0.0`. `tests/test-release-metadata.sh` fails the build if you do.
+
+### Testing
+Run `./tests/run-tests.sh` before committing. It covers release metadata, the
+production `run.sh`, startup hardening and the Node image service. CI
+(`.github/workflows/ci.yml`) runs the same suites plus shellcheck, hadolint and
+a real multi-arch image build.
 
 ### Add-on Structure (claude-terminal/)
 - **config.yaml** - Home Assistant add-on configuration (multi-arch, ingress, ports)
@@ -86,12 +105,12 @@ mkdir -p /tmp/test-config/claude-config
 echo '{"auto_launch_claude": false}' > /tmp/test-config/options.json
 
 # Run test container
-podman run -d --name test-claude-dev -p 7681:7681 -v /tmp/test-config:/config local/claude-terminal:test
+podman run -d --name test-claude-dev -p 7680:7680 -v /tmp/test-config:/config local/claude-terminal:test
 
 # Check logs
 podman logs test-claude-dev
 
-# Test web interface at http://localhost:7681
+# Test web interface at http://localhost:7680
 
 # Stop and cleanup
 podman stop test-claude-dev && podman rm test-claude-dev
@@ -115,7 +134,7 @@ podman exec test-claude-dev chmod +x /opt/scripts/claude-session-picker.sh
 2. **Rebuild** with `podman build -t local/claude-terminal:test ./claude-terminal`
 3. **Stop/remove** old container: `podman stop test-claude-dev && podman rm test-claude-dev`
 4. **Start new** container with updated image
-5. **Test** changes at http://localhost:7681
+5. **Test** changes at http://localhost:7680
 6. **Repeat** until satisfied, then commit and push
 
 #### Debugging Tips
@@ -125,7 +144,7 @@ podman exec test-claude-dev chmod +x /opt/scripts/claude-session-picker.sh
 - **Volume contents**: `ls -la /tmp/test-config/` to verify persistence
 
 ### Production Testing
-- **Local Testing**: Use `run-addon` to test on localhost:7681
+- **Local Testing**: Use `run-addon` to test on localhost:7680
 - **Container Health**: Check logs with `podman logs <container-id>`
 - **Authentication**: Use `claude-auth debug` within terminal for credential troubleshooting
 

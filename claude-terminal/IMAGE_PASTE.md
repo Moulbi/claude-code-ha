@@ -100,13 +100,17 @@ compare /data/images/pasted-123.png and /data/images/pasted-456.png
 - **Disk**: Images stored in `/data/images/`
 
 ### Ports
-- **7680**: Image service + web interface (ingress)
-- **7681**: ttyd terminal (embedded)
+- **7680**: Image service + web interface, reached through Home Assistant ingress.
+  Not published on the host.
+- **7681**: ttyd terminal, bound to `127.0.0.1` and reachable only through the
+  image service's `/terminal` proxy. Never exposed outside the container.
 
 ### Security
 - Only image files are accepted (MIME type validation)
 - 10MB file size limit
 - Files stored in isolated `/data/images/` directory
+- Stored filenames are generated server-side, so a hostile upload filename cannot
+  escape the upload directory (covered by `tests/test-image-service.js`)
 - No execution permissions on uploaded files
 
 ## Troubleshooting
