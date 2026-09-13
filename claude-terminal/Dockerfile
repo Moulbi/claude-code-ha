@@ -27,6 +27,12 @@ RUN apk add --no-cache \
     wget \
     tree
 
+# Every RUN below pipes a download into another command. Without pipefail, a
+# failed curl is invisible: the pipeline reports the exit status of the last
+# command, so the build happily continues on an empty or error payload. bash is
+# installed by the layer above, so it is available from here on.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+
 # Home Assistant Supervisor always passes BUILD_ARCH (amd64|aarch64|armv7|armhf|i386)
 # as a --build-arg. TARGETARCH/TARGETVARIANT are the automatic BuildKit values and
 # only appear when building with `docker buildx --platform ...`. IMPORTANT: BuildKit
@@ -119,7 +125,7 @@ RUN ADDON_ARCH=$(cat /etc/addon-arch); \
     curl -fsSL -o /tmp/gh.tar.gz \
         "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz" && \
     tar -xzf /tmp/gh.tar.gz -C /tmp && \
-    mv /tmp/gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh /usr/bin/gh && \
+    mv "/tmp/gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh" /usr/bin/gh && \
     chmod +x /usr/bin/gh && \
     rm -rf /tmp/gh* && \
     echo "GitHub CLI v${GH_VERSION} installed successfully"
@@ -133,10 +139,14 @@ WORKDIR /config
 # same add-on version get the same dependency tree. `npm install` resolved
 # semver ranges at build time and could silently ship different code.
 COPY image-service/ /opt/image-service/
-RUN cd /opt/image-service \
-    && npm ci --omit=dev \
+WORKDIR /opt/image-service
+RUN npm ci --omit=dev \
     && npm cache clean --force \
     && chmod +x server.js
+
+# Back to the runtime working directory: the terminal opens in the Home
+# Assistant configuration directory.
+WORKDIR /config
 
 # Copy startup script and modular scripts
 COPY run.sh /run.sh

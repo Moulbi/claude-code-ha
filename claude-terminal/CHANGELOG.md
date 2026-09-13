@@ -57,6 +57,20 @@
   re-fetched for nothing. The runtime `apk` path remains only as a fallback for
   images built before this change.
 
+### 🔧 Technical - Dockerfile correctness
+- **`pipefail` is now set for every build step that pipes a download.** Three
+  `RUN` instructions pipe `curl` into `bash`, `jq` or `sed`. Without `pipefail` a
+  pipeline reports only the *last* command's status, so a failed or empty download
+  was invisible and the build continued on garbage — precisely the failure mode
+  behind this add-on's history of silently broken images.
+- **Quoted the GitHub CLI extraction path** (unquoted expansion, flagged SC2086).
+- **`WORKDIR` instead of `cd`** for the image service install, restoring `/config`
+  afterwards so the terminal still opens in the Home Assistant configuration
+  directory.
+- Remaining hadolint exclusions are now justified inline in the workflow:
+  `FROM ${BUILD_FROM}` is required by the Supervisor build contract, and the npm
+  version policy is deliberate.
+
 ### 🛠️ Improvement - `persist-install`
 - **`--ha-cli` no longer downgrades the bundled CLI.** It installed a hardcoded
   `4.42.0` into `/data/packages/bin`, which comes *first* in `PATH` and therefore

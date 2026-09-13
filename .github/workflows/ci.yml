@@ -37,9 +37,14 @@ jobs:
         uses: hadolint/hadolint-action@v3.1.0
         with:
           dockerfile: claude-terminal/Dockerfile
-          # DL3018: Alpine packages are intentionally unpinned, the base image
-          # tag pins the repository snapshot.
-          ignore: DL3018
+          # DL3018: Alpine packages are intentionally unpinned; the base image
+          #         tag pins the repository snapshot.
+          # DL3006: `FROM ${BUILD_FROM}` is required — the Supervisor supplies
+          #         the tagged base image as a build argument (see build.yaml).
+          # DL3016: the npm fallback deliberately tracks latest on 64-bit; the
+          #         32-bit path is pinned, and the lockfile pins the image
+          #         service's own dependencies.
+          ignore: DL3018,DL3006,DL3016
 
       - name: Validate add-on YAML
         run: |
