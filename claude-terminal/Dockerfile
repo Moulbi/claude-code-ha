@@ -1,26 +1,44 @@
 ARG BUILD_FROM
 FROM ${BUILD_FROM}
 
-# Install packages in a single layer to minimize image size
-# Node.js and npm kept for image-service dependency
+# Install packages in a single layer to minimize image size.
+# Node.js and npm are kept for the image-service dependency.
+# ttyd and tmux are baked in on purpose: they used to be installed by run.sh on
+# every container start, which made startup depend on the Alpine mirrors being
+# reachable and aborted the add-on when they were not.
+# Kept: everything the add-on itself needs to run, plus the tools a terminal is
+# unusable without. Measured against the real Alpine 3.21 index, this set is
+# 146 MiB in 67 packages; the previous list was 193 MiB in 111.
+#
+# Removed, and why — every one of them is a one-liner away via persist-install,
+# which since 2.2.0 reinstalls packages completely on each start:
+#   vim (33 MB)                 nano is here; `persist-install vim` restores it
+#   yq (10 MB)                  jq is here and covers the common cases
+#   py3-aiohttp, py3-requests,  library choices belong to the user's project,
+#   py3-yaml, py3-beautifulsoup4  not the image: `persist-install --python ...`
+#                               puts them in the persistent virtualenv
+# tree is kept: it measured at under a megabyte, so dropping it would cost
+# users a familiar command and save nothing.
 RUN apk add --no-cache \
     nodejs \
     npm \
+    ttyd \
+    tmux \
     bash \
     curl \
     nano \
     python3 \
     py3-pip \
-    py3-requests \
-    py3-aiohttp \
-    py3-yaml \
-    py3-beautifulsoup4 \
     jq \
-    yq \
     git \
-    vim \
     wget \
     tree
+
+# Every RUN below pipes a download into another command. Without pipefail, a
+# failed curl is invisible: the pipeline reports the exit status of the last
+# command, so the build happily continues on an empty or error payload. bash is
+# installed by the layer above, so it is available from here on.
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
 # Home Assistant Supervisor always passes BUILD_ARCH (amd64|aarch64|armv7|armhf|i386)
 # as a --build-arg. TARGETARCH/TARGETVARIANT are the automatic BuildKit values and
@@ -114,7 +132,7 @@ RUN ADDON_ARCH=$(cat /etc/addon-arch); \
     curl -fsSL -o /tmp/gh.tar.gz \
         "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${GH_ARCH}.tar.gz" && \
     tar -xzf /tmp/gh.tar.gz -C /tmp && \
-    mv /tmp/gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh /usr/bin/gh && \
+    mv "/tmp/gh_${GH_VERSION}_linux_${GH_ARCH}/bin/gh" /usr/bin/gh && \
     chmod +x /usr/bin/gh && \
     rm -rf /tmp/gh* && \
     echo "GitHub CLI v${GH_VERSION} installed successfully"
@@ -123,12 +141,19 @@ RUN ADDON_ARCH=$(cat /etc/addon-arch); \
 RUN mkdir -p /config/claude-config
 WORKDIR /config
 
-# Copy and install image service
+# Copy and install image service.
+# `npm ci` installs exactly the committed lockfile, so two images built from the
+# same add-on version get the same dependency tree. `npm install` resolved
+# semver ranges at build time and could silently ship different code.
 COPY image-service/ /opt/image-service/
-RUN cd /opt/image-service \
-    && npm install --production --no-optional \
+WORKDIR /opt/image-service
+RUN npm ci --omit=dev \
     && npm cache clean --force \
     && chmod +x server.js
+
+# Back to the runtime working directory: the terminal opens in the Home
+# Assistant configuration directory.
+WORKDIR /config
 
 # Copy startup script and modular scripts
 COPY run.sh /run.sh

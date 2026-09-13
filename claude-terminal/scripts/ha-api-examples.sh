@@ -128,6 +128,10 @@ echo ""
 echo "════════════════════════════════════════════════════════════════"
 echo "Python script example for entity control:"
 echo ""
+echo "  Prerequisite:  persist-install --python requests"
+echo "  (requests is not bundled; that command puts it in the persistent"
+echo "   virtualenv, so it is still there after a restart.)"
+echo ""
 cat << 'EOF'
 #!/usr/bin/env python3
 import os

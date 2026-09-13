@@ -32,14 +32,15 @@ manual_auth_input() {
         return 1
     fi
 
-    # Save to temp file for Claude to read
-    echo "$auth_code" > /tmp/claude-auth-code
+    # The code is piped straight to Claude below. It used to also be written to
+    # /tmp/claude-auth-code, which nothing ever read: that left an authentication
+    # code sitting in plaintext on disk for no reason.
     echo ""
-    echo "✅ Code saved. Starting Claude authentication..."
+    echo "✅ Code received. Starting Claude authentication..."
     sleep 1
 
-    # Try to pipe the code to Claude
-    echo "$auth_code" | claude
+    printf '%s\n' "$auth_code" | claude
+    unset auth_code
 }
 
 read_auth_from_file() {

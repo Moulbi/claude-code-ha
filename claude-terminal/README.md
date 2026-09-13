@@ -75,11 +75,15 @@ claude-logout
 
 The add-on works out of the box, but also supports a few optional advanced settings:
 
-- **Port**: Web interface runs on port 7681
+- **Access**: through the Home Assistant sidebar panel (ingress) only. The add-on
+  publishes no host port: `ttyd` runs writable with no credentials, so exposing it
+  on the LAN meant an unauthenticated root shell. See CHANGELOG 2.1.0.
 - **Authentication**: OAuth with Anthropic (credentials stored securely in `/config/claude-config/`)
 - **Terminal**: Full bash environment with Claude Code CLI pre-installed
 - **Persistent Claude override**: Optional `use_persistent_claude` / `auto_update_claude_on_start`
-- **Volumes**: Access to both `/config` (Home Assistant) and `/addons` (for development)
+- **Volumes**: `/config` (Home Assistant configuration, read-write) and `/data`
+  (add-on private storage: credentials, persistent packages, pasted images).
+  `/addons` is **not** mapped.
 
 ## Troubleshooting
 
@@ -133,7 +137,7 @@ This add-on includes a comprehensive development setup using Nix:
 ```bash
 # Available development commands
 build-addon      # Build the add-on container with Podman
-run-addon        # Run add-on locally on port 7681
+run-addon        # Run add-on locally on port 7680
 lint-dockerfile  # Lint Dockerfile with hadolint
 test-endpoint    # Test web endpoint availability
 ```

@@ -1,7 +1,7 @@
 ---
 name: "Claude Terminal Pro"
 description: "Enhanced terminal interface for Anthropic's Claude Code CLI with persistent auth, package management, and image paste support. Fork of heytcass/home-assistant-addons"
-version: "2.0.13"
+version: "2.2.0"
 slug: "claude_terminal_pro"
 init: false
 
@@ -22,12 +22,17 @@ panel_title: "Claude Terminal Pro"
 panel_admin: true
 
 # Port configuration
-ports:
-  7680/tcp: 7680
-  7681/tcp: 7681
-ports_description:
-  7680/tcp: "Image upload service and web interface"
-  7681/tcp: "ttyd terminal (embedded in web interface)"
+#
+# No host ports are published. The add-on is reached exclusively through Home
+# Assistant ingress, which enforces HA authentication.
+#
+# Publishing these ports would expose an unauthenticated, writable root shell
+# (ttyd runs with --writable and no credentials) inside a container that holds
+# /config read-write, the Supervisor manager role and SUPERVISOR_TOKEN. Ingress
+# reaches the container over the internal Docker network and does not require a
+# host port mapping, so there is nothing to gain and a full host takeover to
+# lose. ttyd itself now binds to 127.0.0.1 and is only reachable through the
+# ingress web interface on port 7680.
 
 # Add-on configuration options
 options:
@@ -55,13 +60,23 @@ map:
   - config:rw    # Access to Home Assistant configuration files
 
 # API access for Home Assistant integration
+#
+# Role is `homeassistant`, not `manager`. `manager` grants add-on management,
+# which means anything that achieves code execution in this container can
+# install an arbitrary add-on — and an add-on can run privileged on the host.
+# That is a host-takeover path, granted for a capability the add-on does not
+# need: its purpose is to let Claude work with Home Assistant, and
+# `homeassistant_api: true` plus this role already gives the full Core API
+# (states, services, events, config) and `ha core ...`.
+#
+# What this gives up: managing OTHER add-ons and the Supervisor itself, so
+# `ha addons ...` and `ha supervisor ...` are refused. If you deliberately want
+# that, set `hassio_role: manager` here and rebuild — but understand that you
+# are re-opening the escalation path above.
 hassio_api: true
-hassio_role: manager
+hassio_role: homeassistant
 homeassistant_api: true
 auth_api: true
 
 # Service startup configuration
 startup: services
-
-# Web UI access URL
-webui: http://[HOST]:[PORT:7680]/

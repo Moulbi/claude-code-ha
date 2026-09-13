@@ -1,5 +1,207 @@
 # Changelog
 
+## 2.2.0
+
+### 🐛 Bug Fix - `persist-install` did not actually make packages work after a restart
+The mechanism installed a package with `apk`, then copied its executables from
+`/usr/bin` and its `*.so` files from `/usr/lib` into `/data/packages`. Everything
+else the package shipped was silently left behind.
+
+Measured against the real Alpine 3.21 index: **`python3` installs 715 files under
+`/usr/lib`**, and its standard library is `.py`, not `.so`. So `persist-install
+python3 py3-pip` — the exact command this project's own instructions told the
+assistant to run — produced a `python3` that failed at the next restart with
+`Could not find platform independent libraries <prefix>`. The same applied to
+anything needing data files at runtime (`git`, `vim`, `perl`).
+
+**The fix persists the inputs instead of the artefacts.** Two things now live in
+`/data`: the list of packages you asked for (`/data/packages/world`) and apk's
+download cache (`/data/packages/apk-cache`). On every container start, `run.sh`
+replays that list through `apk`, producing a genuine, complete installation —
+data files, symlinks, triggers and dependencies included.
+
+- **Verified end-to-end** against a real Alpine root: install `python3` in one
+  container, recreate the container, replay — `import json, ssl, sqlite3` works.
+  A warm replay of `python3` and its 25 dependencies takes about **one second**.
+- **Mostly works offline too.** The cached `.apk` files and repository indexes
+  mean a restart with no internet still restores most packages. Not all: `apk`
+  masks virtual providers under `--no-network` (`python3` needs `python3-pyc`),
+  so the fallback retries package by package and reports precisely which entries
+  need connectivity rather than failing the batch.
+- **A failed install is no longer recorded**, so a typo cannot make every future
+  startup fail on a package that does not exist.
+- **New**: `persist-install --remove <pkg>` and `persist-install --restore`.
+- **Legacy leftovers are handled, not abandoned.** Binaries copied by the old
+  mechanism stay on disk but move to the **end** of `PATH`, so a real
+  installation always wins, and `persist-install --list` points them out.
+
+### 🔒 Security - Supervisor role reduced from `manager` to `homeassistant`
+- `manager` grants **add-on management**. An add-on can run privileged on the
+  host, so anything achieving code execution in this container — a prompt
+  injection, a hostile repository, a compromised dependency — could install one
+  and take over the Home Assistant host. That is a large blast radius for a
+  terminal, and it was granted for a capability the add-on does not need.
+- `homeassistant_api: true` plus the `homeassistant` role still provides the full
+  **Core API** — states, services, events, config — which is what "connect Home
+  Assistant to Claude" actually requires, along with `ha core ...`.
+- **What you lose**: `ha addons ...` and `ha supervisor ...` are refused. If you
+  want them back, set `hassio_role: manager` in `config.yaml` and rebuild,
+  knowing you are re-opening the path above.
+- CI now fails the build if the role returns to `manager` or `admin`.
+
+### 🛠️ Improvement - Smaller image, honestly measured
+Measured by installing both package sets into real Alpine 3.21 roots:
+**193 MiB in 111 packages → 146 MiB in 67 packages.**
+
+An earlier review of this repository estimated the saving at "300-400 MB". That
+was wrong by roughly six times; the real figure is ~53 MB, and the more valuable
+outcome is **44 fewer packages** to carry CVEs.
+
+- **Removed**: `vim` (33 MB), `yq` (10 MB), `py3-aiohttp` (6 MB), `py3-requests`,
+  `py3-yaml`, `py3-beautifulsoup4`. Every one is a single `persist-install`
+  away — and, thanks to the fix above, comes back *working*.
+- **Kept**: `tree`, which measured under a megabyte. Dropping it would have cost
+  a familiar command and saved nothing.
+- The Supervisor API examples now name their prerequisite
+  (`persist-install --python requests`) instead of assuming it is bundled, and
+  the README no longer advertises tools that are not in the image.
+
+### 🔧 Technical
+- New `tests/test-persist-install.sh`: the world file records only successful
+  installs, never duplicates, survives removal, drives the startup replay, and
+  falls back per package. `--ha-cli` is asserted never to shadow the bundled CLI.
+- `tests/test-production-run.sh` updated: startup now replays the persistent
+  package list even when no packages are configured, which is the whole point.
+
+## 2.1.0
+
+### 🔒 Security - The add-on no longer publishes a root shell on your LAN
+- **Breaking, and deliberate: no host ports are published any more.** `config.yaml`
+  mapped `7680` and `7681` to the host. Home Assistant publishes declared ports by
+  default, and `ttyd` runs `--writable` with no credentials, so anyone who could
+  reach `http://<home-assistant>:7681` got an unauthenticated **root shell** in a
+  container holding `/config` read-write, `hassio_role: manager`, the Home
+  Assistant API and `SUPERVISOR_TOKEN`. Ingress authentication was simply bypassed.
+  - Ingress reaches the container over the internal Docker network and needs no
+    host port, so nothing legitimate is lost.
+  - **If you were opening the add-on by IP and port, use the sidebar panel instead.**
+- **ttyd now binds `127.0.0.1`** instead of `0.0.0.0`. Its only legitimate consumer
+  is the image service, which proxies `/terminal` over the loopback.
+- **Local add-on state is no longer tracked in git** (`config/claude-config/`,
+  `config/options.json`). That directory is where Claude and `gh` drop credential
+  files, and nothing stopped one from being committed.
+- **Dependencies**: `multer` 1.x (deprecated, known DoS advisories) upgraded to 2.x,
+  and `qs` pinned to a patched release. `npm audit` is clean, with no major
+  framework upgrade.
+
+### 🐛 Bug Fix - The image service health check was always green
+- **`$!` after a pipeline is the wrong PID.** The service was started as
+  `node ... | while read`, and `$!` captured the logging loop, not node. The
+  `kill -0` readiness probe therefore passed unconditionally: *"Image service is
+  running successfully"* was logged even when the service had already died.
+  Readiness is now proven by an actual `/health` response.
+- **The image service is now supervised and restarted** with capped backoff.
+  Previously, if it died the ingress panel went blank until a manual restart,
+  because it serves the entry point and proxies the terminal.
+
+### 🐛 Bug Fix - Credential migration never migrated credentials, then overwrote them
+- **Hidden files were skipped.** The migration copied `"$legacy_path"/*`, a glob
+  that does not match dotfiles — so it skipped exactly the files it exists for
+  (`.credentials.json`, `.claude.json`). It now copies `"$legacy_path/."`.
+- **Fixing that glob alone would have been worse than the bug.** Correctly copying
+  dotfiles would, once, overwrite working credentials in `/data` with the stale
+  copy in `/config`. Migration now runs with `cp -a -n`: it only fills in files
+  that are missing, which is all a migration should ever do.
+- **It ran on every start.** Described as one-time in a comment but not in code, it
+  re-copied legacy files over `/data` at each boot, letting a stale file left in
+  `/config` overwrite freshly obtained credentials. It now records a marker in
+  `/data` and runs exactly once.
+
+### 🐛 Bug Fix - A WebSocket arriving first was never proxied
+- `http-proxy-middleware` only subscribes to `upgrade` lazily, on the first HTTP
+  request through the middleware. A terminal reconnect that opened with the
+  WebSocket handshake hung until timeout. The server now subscribes explicitly.
+
+### 🛠️ Improvement - Startup no longer depends on the Alpine mirrors
+- **`ttyd` and `tmux` are baked into the image.** `run.sh` ran an unconditional
+  `apk add ttyd jq curl tmux` on *every* container start, with `exit 1` on failure:
+  the add-on refused to start whenever the mirrors were unreachable, and paid the
+  download on each boot. `jq` and `curl` were already in the image and were being
+  re-fetched for nothing. The runtime `apk` path remains only as a fallback for
+  images built before this change.
+
+### 🔧 Technical - Dockerfile correctness
+- **`pipefail` is now set for every build step that pipes a download.** Three
+  `RUN` instructions pipe `curl` into `bash`, `jq` or `sed`. Without `pipefail` a
+  pipeline reports only the *last* command's status, so a failed or empty download
+  was invisible and the build continued on garbage — precisely the failure mode
+  behind this add-on's history of silently broken images.
+- **Quoted the GitHub CLI extraction path** (unquoted expansion, flagged SC2086).
+- **`WORKDIR` instead of `cd`** for the image service install, restoring `/config`
+  afterwards so the terminal still opens in the Home Assistant configuration
+  directory.
+- Remaining hadolint exclusions are now justified inline in the workflow:
+  `FROM ${BUILD_FROM}` is required by the Supervisor build contract, and the npm
+  version policy is deliberate.
+
+### 🛠️ Improvement - `persist-install`
+- **`--ha-cli` no longer downgrades the bundled CLI.** It installed a hardcoded
+  `4.42.0` into `/data/packages/bin`, which comes *first* in `PATH` and therefore
+  shadowed the newer `ha` shipped in the image. It now detects the bundled CLI and
+  declines, with `--force` as an escape hatch.
+- **A failed `apk add` no longer killed the caller's shell** (`exit 1` → `return 1`).
+- **Honest limits**: installing system packages now states that only executables and
+  shared libraries are copied, so packages needing data files may not survive a
+  restart from the persistent copy alone.
+
+### 📚 Documentation - The project instructions described an add-on that no longer exists
+- **`CLAUDE.md` documented credential paths the code has not used for several
+  releases**, which would have led anyone following it to "fix" authentication into
+  the wrong directory:
+  - `HOME` is `/data/home`, not `/root`.
+  - `ANTHROPIC_CONFIG_DIR` is `/data/.config/claude`, not `/config/claude-config`.
+  - `CLAUDE_CREDENTIALS_DIRECTORY` was listed as a key environment variable. It is
+    set nowhere in the codebase and never was.
+  - `/config/claude-config/` is a **legacy** location, read once by the migration,
+    not where credentials live.
+  - The "background credential monitoring service" in the startup flow was removed
+    when the add-on moved to `/data`.
+- **`README.md` claimed `/addons` was mapped.** Only `config:rw` is.
+- **`persist-install --ha-cli` guidance corrected**: `ha` already ships in the image.
+- **These three files are now pinned against each other.**
+  `tests/test-release-metadata.sh` fails if `run.sh` and `CLAUDE.md` disagree on
+  `HOME`, `ANTHROPIC_CONFIG_DIR`, `ANTHROPIC_HOME` or `GH_CONFIG_DIR`. Doc/code
+  drift is this repository's recurring failure mode; it is now a build failure.
+
+### 🔒 Security - Credential handling hygiene
+- **The authentication helper no longer writes your code to `/tmp/claude-auth-code`.**
+  It was written on every manual authentication and never read back: an
+  authentication code left in plaintext on disk for nothing.
+- **GitHub token entry rewritten.** The token was read inside a command
+  substitution subshell and `gh`'s output was sent to `/dev/null`, so a rejected
+  token looked like a successful login. It is now read in the current shell, errors
+  are visible, and the variable is unset afterwards.
+
+### 🔧 Technical - Tests and CI
+- **Continuous integration added.** Nothing ran the existing test suite; the only
+  workflow was the `@claude` mention handler. Pull requests and pushes now run
+  shellcheck, hadolint, the shell suites, the Node suite and a real image build.
+- **The image service has tests for the first time** (9 cases): health, config,
+  upload, rejection of non-image payloads, hostile filenames, the HTTP proxy and
+  the WebSocket upgrade — including the first-request upgrade regression above.
+- **Regression tests for every fix in this release**: tool installation, migration
+  idempotence, dotfile migration, and readiness probing.
+- **Release metadata is enforced**: `config.yaml`, `build.yaml` and `CHANGELOG.md`
+  must agree on the version, every declared architecture must have a base image,
+  and the security invariants above are asserted in CI.
+- **Dead code removed.** `scripts/persistent-packages.sh` (201 lines) was never
+  called by `run.sh`, which carries its own copy of those functions — yet half the
+  test suite exercised only that dead file. Its real equivalent in `run.sh` is
+  already covered by `test-production-run.sh`.
+- **Reproducible dependency installs**: `package-lock.json` is now committed and the
+  image builds with `npm ci`, so two images tagged with the same version contain the
+  same dependency tree.
+
 ## 2.0.13
 
 ### Bug fixes

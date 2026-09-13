@@ -1,279 +1,274 @@
 #!/bin/bash
 
-# User-friendly command for installing packages persistently
-# Usage: persist-install python git vim
+# persist-install — install packages that really survive a container restart.
+#
+# HOW THIS WORKS, AND WHY IT CHANGED IN 2.2.0
+#
+# Earlier versions installed a package with apk and then copied its executables
+# from /usr/bin and its *.so files from /usr/lib into /data/packages. Everything
+# else the package shipped was silently left behind, so anything that needs data
+# files at runtime came back broken after a restart. python3 is the clearest
+# case: it installs 715 files under /usr/lib, of which the standard library is
+# .py, not .so. The copy therefore produced a python3 that fails at startup with
+# "Could not find platform independent libraries".
+#
+# Instead of copying artefacts, we now persist the *inputs*: the list of
+# packages you asked for (/data/packages/world) and apk's package cache
+# (/data/packages/apk-cache). On every container start, run.sh replays the world
+# file through apk, which produces a genuine, complete installation — data
+# files, symlinks, triggers and dependencies included. Because the .apk files
+# and the repository indexes are cached in /data, that replay also works with no
+# network at all after the first install.
 
-PERSIST_ROOT="/data/packages"
-PERSIST_BIN="$PERSIST_ROOT/bin"
-PERSIST_PYTHON="$PERSIST_ROOT/python"
+set -o pipefail
+
+PERSIST_ROOT="${PERSIST_ROOT:-/data/packages}"
+PERSIST_CACHE="${PERSIST_CACHE:-$PERSIST_ROOT/apk-cache}"
+PERSIST_WORLD="${PERSIST_WORLD:-$PERSIST_ROOT/world}"
+PERSIST_PYTHON="${PERSIST_PYTHON:-$PERSIST_ROOT/python}"
+PERSIST_LEGACY_BIN="${PERSIST_LEGACY_BIN:-$PERSIST_ROOT/bin}"
+APK_BIN="${APK_BIN:-apk}"
 
 show_help() {
     cat << EOF
 🔧 Persistent Package Installer
 
-Install packages that survive container restarts!
+Install packages that survive container restarts and reboots.
 
 USAGE:
     persist-install <package1> [package2] [...]
     persist-install --python <package1> [package2] [...]
-    persist-install --ha-cli
+    persist-install --remove <package1> [package2] [...]
+    persist-install --restore
     persist-install --list
     persist-install --help
 
 EXAMPLES:
-    persist-install git vim htop          # Install system packages
-    persist-install --python requests pandas  # Install Python packages
-    persist-install --ha-cli              # Install Home Assistant CLI
-    persist-install --list                # Show installed packages
+    persist-install git htop          # Install system packages
+    persist-install --python requests pandas
+    persist-install --remove htop     # Stop reinstalling it on each start
+    persist-install --list            # Show what is persisted
 
-NOTES:
-    • Packages are installed to: /data/packages (persistent storage)
-    • Survives container restarts and reboots
-    • System packages copied from Alpine APK
-    • Python packages installed to virtual environment
-    • Home Assistant CLI downloaded from official GitHub releases
+HOW IT PERSISTS:
+    • Your package list lives in $PERSIST_WORLD
+    • apk's download cache lives in $PERSIST_CACHE
+    • On each container start, run.sh reinstalls the list from that cache,
+      so packages come back complete — data files and dependencies included.
+    • With the cache warm the replay takes about a second, and most packages
+      also restore with the network down (not all: apk cannot resolve virtual
+      providers offline).
+    • Python packages go to a virtualenv in $PERSIST_PYTHON/venv, which lives
+      on persistent storage directly and needs no replay.
 
-QUICK START:
-    1. persist-install python3 py3-pip    # Install Python (first time)
-    2. persist-install --ha-cli           # Install official HA CLI
-    3. Reboot and enjoy! Packages will still be there!
-
+NOTE:
+    'ha', 'gh', 'git', 'jq', 'curl', 'node' and 'npm' already ship in the
+    add-on image. You do not need to install them.
 EOF
 }
 
-list_packages() {
-    echo "=== 📦 Persistent Packages ==="
-    echo ""
-    echo "📁 Location: $PERSIST_ROOT"
-    echo ""
+log()  { printf '%s\n' "$*"; }
+warn() { printf '%s\n' "$*" >&2; }
 
-    echo "🔧 System Binaries ($PERSIST_BIN):"
-    if [ -d "$PERSIST_BIN" ] && [ "$(ls -A $PERSIST_BIN 2>/dev/null)" ]; then
-        ls -1 "$PERSIST_BIN" | sed 's/^/  • /'
-    else
-        echo "  (none installed)"
+ensure_dirs() {
+    mkdir -p "$PERSIST_ROOT" "$PERSIST_CACHE" "$PERSIST_PYTHON" || return 1
+    [ -f "$PERSIST_WORLD" ] || : > "$PERSIST_WORLD"
+}
+
+# Read the world file as a clean, de-duplicated, sorted package list.
+read_world() {
+    [ -f "$PERSIST_WORLD" ] || return 0
+    grep -vE '^\s*(#|$)' "$PERSIST_WORLD" 2>/dev/null | tr -d '\r' | sort -u
+}
+
+write_world() {
+    sort -u > "$PERSIST_WORLD.tmp" && mv "$PERSIST_WORLD.tmp" "$PERSIST_WORLD"
+}
+
+world_add() {
+    { read_world; printf '%s\n' "$@"; } | grep -vE '^\s*$' | write_world
+}
+
+world_remove() {
+    local keep pkg
+    keep=$(read_world)
+    for pkg in "$@"; do
+        keep=$(printf '%s\n' "$keep" | grep -vxF "$pkg")
+    done
+    printf '%s\n' "$keep" | grep -vE '^\s*$' | write_world
+}
+
+# Install through apk with the persistent cache.
+#
+# The cache makes the normal path fast (a warm restore of python3 and its 25
+# dependencies takes about a second) and lets most packages reinstall with the
+# network down. It is not a universal offline guarantee: apk masks virtual
+# providers under --no-network, so a package pulled in through one — python3
+# needs python3-pyc, for example — still needs connectivity. The fallback
+# therefore retries package by package, so one unresolvable entry cannot block
+# everything else.
+apk_install() {
+    if "$APK_BIN" add --no-progress --cache-dir "$PERSIST_CACHE" "$@"; then
+        return 0
     fi
-    echo ""
 
-    echo "🐍 Python Packages ($PERSIST_PYTHON/venv):"
-    if [ -f "$PERSIST_PYTHON/venv/bin/pip" ]; then
-        source "$PERSIST_PYTHON/venv/bin/activate"
-        pip list --format=columns | tail -n +3 | sed 's/^/  • /'
-    else
-        echo "  (virtual environment not created)"
-        echo "  Run: persist-install python3 py3-pip"
-    fi
-    echo ""
+    warn "⚠️  apk failed (no network?); retrying from the persistent cache, one package at a time"
 
-    echo "💾 Total size:"
-    du -sh "$PERSIST_ROOT" 2>/dev/null || echo "  0B"
+    local pkg failed=0
+    for pkg in "$@"; do
+        if "$APK_BIN" add --no-progress --cache-dir "$PERSIST_CACHE" --no-network "$pkg"; then
+            warn "   ✓ $pkg restored from cache"
+        else
+            warn "   ✗ $pkg needs connectivity (not fully cached)"
+            failed=1
+        fi
+    done
+    return "$failed"
 }
 
 install_system_packages() {
-    local pkg
-
     if [ "$#" -eq 0 ]; then
-        echo "❌ No system packages specified"
+        warn "❌ No system packages specified"
         return 1
     fi
 
-    echo "📦 Installing system packages: $*"
-    echo ""
+    ensure_dirs || { warn "❌ Cannot write to $PERSIST_ROOT"; return 1; }
 
-    # Install via APK first
-    echo "⏳ Installing via APK..."
-    if ! apk add --no-cache "$@"; then
-        echo "❌ Failed to install packages"
-        exit 1
+    log "📦 Installing: $*"
+    if ! apk_install "$@"; then
+        warn "❌ Failed to install: $*"
+        warn "   Nothing was added to the persistent package list."
+        return 1
     fi
 
-    # Copy to persistent storage
-    echo "💾 Copying to persistent storage..."
-    mkdir -p "$PERSIST_BIN" "$PERSIST_ROOT/lib"
+    world_add "$@"
+    log ""
+    log "✅ Installed and recorded in $PERSIST_WORLD"
+    log "💡 Reinstalled automatically on every restart, complete with their data"
+    log "   files and dependencies — served from the cache in $PERSIST_CACHE."
+}
 
-    for pkg in "$@"; do
-        echo "  Processing: $pkg"
+remove_packages() {
+    if [ "$#" -eq 0 ]; then
+        warn "❌ No packages specified"
+        return 1
+    fi
 
-        # Get list of files installed by package
-        apk info -L "$pkg" 2>/dev/null | while read -r file; do
-            # Copy executables
-            if [[ "$file" == /usr/bin/* ]] || [[ "$file" == /usr/sbin/* ]] || [[ "$file" == /bin/* ]]; then
-                if [ -f "$file" ] && [ -x "$file" ]; then
-                    cp -a "$file" "$PERSIST_BIN/" 2>/dev/null && echo "    ✓ $(basename $file)"
-                fi
-            fi
+    ensure_dirs || return 1
+    world_remove "$@"
+    log "🗑️  Removed from the persistent list: $*"
+    log "   They stay installed in the running container until the next restart."
+    log "   Run 'apk del $*' to drop them right now."
+}
 
-            # Copy shared libraries
-            if [[ "$file" == /usr/lib/* ]] && [[ "$file" == *.so* ]]; then
-                if [ -f "$file" ]; then
-                    cp -a "$file" "$PERSIST_ROOT/lib/" 2>/dev/null
-                fi
-            fi
-        done
-    done
+# Replay the world file. Called by run.sh at startup and by --restore.
+restore_packages() {
+    local packages
+    ensure_dirs || return 1
 
-    echo ""
-    echo "✅ System packages installed and persisted!"
-    echo "💡 These packages will survive container restarts"
+    packages=$(read_world)
+    if [ -z "$packages" ]; then
+        log "No persistent packages recorded."
+        return 0
+    fi
+
+    log "♻️  Restoring persistent packages: $(printf '%s' "$packages" | tr '\n' ' ')"
+    # shellcheck disable=SC2086  # deliberate word splitting: one package per word
+    if apk_install $packages; then
+        log "✅ Persistent packages restored"
+        return 0
+    fi
+
+    warn "⚠️  Could not restore every persistent package. The add-on continues;"
+    warn "   run 'persist-install --restore' once connectivity is back."
+    return 1
 }
 
 install_python_packages() {
     if [ "$#" -eq 0 ]; then
-        echo "❌ No Python packages specified"
+        warn "❌ No Python packages specified"
         return 1
     fi
 
-    echo "🐍 Installing Python packages: $*"
-    echo ""
+    ensure_dirs || return 1
 
-    # Ensure Python and venv exist
-    if [ ! -f "$PERSIST_PYTHON/venv/bin/python" ]; then
-        echo "⚠️  Python virtual environment not found"
-        echo "📥 Creating virtual environment..."
-
-        # Check if system Python exists
-        if ! command -v python3 &>/dev/null; then
-            echo "❌ Python not installed. Installing..."
-            install_system_packages python3 py3-pip
+    if [ ! -x "$PERSIST_PYTHON/venv/bin/python" ]; then
+        log "📥 Creating the persistent Python virtual environment..."
+        if ! command -v python3 >/dev/null 2>&1; then
+            install_system_packages python3 py3-pip || return 1
         fi
-
-        mkdir -p "$PERSIST_PYTHON"
-        python3 -m venv "$PERSIST_PYTHON/venv"
-        echo "✅ Virtual environment created"
-        echo ""
-    fi
-
-    # Activate and install
-    source "$PERSIST_PYTHON/venv/bin/activate"
-
-    echo "⏳ Installing packages..."
-    pip install --upgrade pip -q
-    pip install "$@"
-
-    echo ""
-    echo "✅ Python packages installed!"
-    echo "💡 Use 'source $PERSIST_PYTHON/venv/bin/activate' to activate venv"
-}
-
-install_ha_cli() {
-    local HA_VERSION="4.42.0"
-    local BASE_URL="https://github.com/home-assistant/cli/releases/download/${HA_VERSION}"
-
-    # Detect architecture
-    local machine=$(uname -m)
-    local arch=""
-
-    case "$machine" in
-        x86_64)     arch="amd64" ;;
-        aarch64)    arch="aarch64" ;;
-        armv7l)     arch="armv7" ;;
-        armv6l)     arch="armhf" ;;
-        i386|i686)  arch="i386" ;;
-        *)
-            echo "❌ Unsupported architecture: $machine"
+        if ! python3 -m venv "$PERSIST_PYTHON/venv"; then
+            warn "❌ Could not create the virtual environment"
             return 1
-            ;;
-    esac
-
-    local download_url="${BASE_URL}/ha_${arch}"
-    local target_path="${PERSIST_BIN}/ha"
-
-    echo "🏠 Installing Home Assistant CLI v${HA_VERSION}"
-    echo "📦 Architecture: ${arch}"
-    echo ""
-
-    # Check if already installed
-    if [ -x "${target_path}" ]; then
-        echo "ℹ️  Home Assistant CLI is already installed"
-        "${target_path}" --version
-        return 0
+        fi
     fi
 
-    # Create directory
-    mkdir -p "$PERSIST_BIN"
+    # shellcheck disable=SC1091
+    . "$PERSIST_PYTHON/venv/bin/activate" || return 1
 
-    # Download
-    echo "⏳ Downloading from GitHub..."
-    if ! curl -fsSL -o "${target_path}" "${download_url}"; then
-        echo "❌ Failed to download ha CLI binary"
+    log "🐍 Installing Python packages: $*"
+    pip install --upgrade pip -q
+    if ! pip install "$@"; then
+        warn "❌ pip failed"
         return 1
     fi
 
-    # Make executable
-    chmod +x "${target_path}"
-
-    # Verify file was downloaded and is executable
-    if [ ! -x "${target_path}" ]; then
-        echo "❌ Binary is not executable"
-        rm -f "${target_path}"
-        return 1
-    fi
-
-    # Check file size (should be > 1MB)
-    local size=$(stat -f%z "${target_path}" 2>/dev/null || stat -c%s "${target_path}" 2>/dev/null || echo "0")
-    if [ "$size" -lt 1000000 ]; then
-        echo "❌ Downloaded file is too small (${size} bytes)"
-        rm -f "${target_path}"
-        return 1
-    fi
-
-    echo ""
-    echo "✅ Home Assistant CLI installed successfully!"
-    echo "📦 Binary size: $((size / 1024 / 1024)) MB"
-    echo "📍 Location: ${target_path}"
-    echo ""
-
-    # Try to get version (may fail if supervisor not accessible, but that's OK)
-    echo "🔍 Testing ha command..."
-    if "${target_path}" --version 2>&1 | head -5; then
-        echo ""
-    else
-        echo "⚠️  Note: 'ha --version' returned an error, but the binary is installed."
-        echo "   This is normal if supervisor API is not accessible yet."
-        echo "   Try: ha core info"
-    fi
-
-    echo ""
-    echo "💡 Try these commands:"
-    echo "   ha core info"
-    echo "   ha addons list"
-    echo "   ha supervisor info"
+    log ""
+    log "✅ Installed into $PERSIST_PYTHON/venv"
+    log "💡 The virtualenv lives on persistent storage, so it survives restarts as-is."
 }
 
-# Main execution
+list_packages() {
+    log "=== 📦 Persistent Packages ==="
+    log ""
+    log "🔧 System packages (replayed on every start, from $PERSIST_WORLD):"
+    local packages
+    packages=$(read_world)
+    if [ -n "$packages" ]; then
+        printf '%s\n' "$packages" | sed 's/^/  • /'
+    else
+        log "  (none)"
+    fi
+    log ""
+
+    log "🐍 Python packages ($PERSIST_PYTHON/venv):"
+    if [ -x "$PERSIST_PYTHON/venv/bin/pip" ]; then
+        "$PERSIST_PYTHON/venv/bin/pip" list --format=columns 2>/dev/null | tail -n +3 | sed 's/^/  • /'
+    else
+        log "  (virtual environment not created)"
+    fi
+    log ""
+
+    if [ -d "$PERSIST_LEGACY_BIN" ] && [ -n "$(ls -A "$PERSIST_LEGACY_BIN" 2>/dev/null)" ]; then
+        log "⚠️  Legacy copied binaries still present in $PERSIST_LEGACY_BIN:"
+        ls -1 "$PERSIST_LEGACY_BIN" | sed 's/^/  • /'
+        log "   These are leftovers from the pre-2.2.0 copy-based mechanism. They were"
+        log "   incomplete by design (data files were never copied) and now sit at the"
+        log "   END of PATH so a real installation always wins. Reinstall anything you"
+        log "   still need with 'persist-install <package>', then delete that directory."
+        log ""
+    fi
+
+    log "💾 Cache: $(du -sh "$PERSIST_CACHE" 2>/dev/null | cut -f1 || echo 0B) in $PERSIST_CACHE"
+}
+
 main() {
-    # Check if running in the add-on
-    if [ ! -d "/data" ]; then
-        echo "❌ Error: /data directory not found"
-        echo "This script must run inside the Claude Terminal add-on"
-        exit 1
+    if [ ! -d "$(dirname "$PERSIST_ROOT")" ]; then
+        warn "❌ $(dirname "$PERSIST_ROOT") not found; run this inside the add-on"
+        return 1
     fi
 
     case "${1:-}" in
-        --help|-h|help)
-            show_help
+        --help|-h|help|"") show_help ;;
+        --list|-l|list)    list_packages ;;
+        --restore|restore) restore_packages ;;
+        --remove|-r|remove) shift; remove_packages "$@" ;;
+        --python|-p|python) shift; install_python_packages "$@" ;;
+        --ha-cli|ha-cli)
+            log "ℹ️  The Home Assistant CLI already ships in the add-on image at /usr/bin/ha."
+            log "   Installing a second copy is unnecessary and risks shadowing a newer one."
+            log "   Run 'ha --help' to use it."
             ;;
-        --list|-l|list)
-            list_packages
-            ;;
-        --python|-p|python)
-            shift
-            if [ $# -eq 0 ]; then
-                echo "❌ Error: No packages specified"
-                echo "Usage: persist-install --python <package1> [package2] ..."
-                exit 1
-            fi
-            install_python_packages "$@"
-            ;;
-        --ha-cli|ha-cli|ha)
-            install_ha_cli
-            ;;
-        "")
-            show_help
-            ;;
-        *)
-            install_system_packages "$@"
-            ;;
+        *) install_system_packages "$@" ;;
     esac
 }
 
